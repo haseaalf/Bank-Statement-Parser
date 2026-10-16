@@ -177,9 +177,38 @@ if (length(all_pdfs) == 0 || length(only) > 0) {
         "parse konsolidasi selesai")
   r <- read.csv(file.path(work, "run_result.csv"), stringsAsFactors = FALSE)
   cd <- read.csv(file.path(work, "consolidation_detail.csv"), stringsAsFactors = FALSE)
-  check(sum(grepl("^\\[GABUNGAN", r$file_path)) == 1 && any(cd$check == "duplicate"),
+  check(sum(grepl("^\\[GABUNGAN", r$file_name)) == 1 && any(cd$check == "duplicate"),
         "konsolidasi: 1 output per rekening, duplikat ditandai")
+
+  # output names: per-file original / per-file standard / consolidated is always standard
+  bri <- all_pdfs[grepl("MUNTILAN", basename(all_pdfs))][1]
+  if (!is.na(bri)) {
+    std <- "BRI_025101000147560_20240801-20240831.xlsx"
+    run_engine("parse", bri, list(output_dir = outx, output_mode = "per_file", on_exists = "overwrite",
+                                  name_style = "standard"))
+    r <- read.csv(file.path(work, "run_result.csv"), stringsAsFactors = FALSE)
+    check(basename(r$output_file[1]) == std, paste("nama standar per file:", basename(r$output_file[1])))
+    run_engine("parse", bri, list(output_dir = outx, output_mode = "per_file", on_exists = "overwrite",
+                                  name_style = "original"))
+    r <- read.csv(file.path(work, "run_result.csv"), stringsAsFactors = FALSE)
+    check(basename(r$output_file[1]) == sub("\\.pdf$", ".xlsx", basename(bri)), "nama asli PDF per file")
+    run_engine("parse", bri, list(output_dir = outx, output_mode = "consolidated", on_exists = "overwrite",
+                                  name_style = "original"))
+    r <- read.csv(file.path(work, "run_result.csv"), stringsAsFactors = FALSE)
+    g <- r[grepl("^\\[GABUNGAN", r$file_name), ]
+    check(nrow(g) == 1 && basename(g$output_file) == std, "gabungan selalu memakai nama standar")
+  }
 }
+
+# ---- 5. Long names (regression: "FATAL: path too long" with 6 consolidated files) ----
+cat("\n[5] Nama file panjang\n")
+long <- paste0("C:\\folder\\", strrep("!!!!!!! MUNTILAN ARIE 2025 1_025101000147560_2024-08-01_2024-08-31_00290827 ", 8), ".pdf")
+row <- tryCatch(result_row(long), error = function(e) NULL)
+check(!is.null(row) && nchar(row$file_name) > 260, paste("result_row menerima path", nchar(long), "karakter"))
+names6 <- paste0(strrep("x", 90), 1:6, ".pdf")
+row <- tryCatch(result_row("", file_name = "[GABUNGAN 6 file] a s/d f", source_files = paste(names6, collapse = " | ")),
+                error = function(e) NULL)
+check(!is.null(row) && length(strsplit(row$source_files, " \\| ")[[1]]) == 6, "baris gabungan 6 file dengan source_files")
 
 cat("\n", if (failures == 0) "SEMUA TES LULUS" else paste(failures, "TES GAGAL"), "\n")
 quit(status = if (failures == 0) 0 else 1)

@@ -15,10 +15,14 @@ write_result_csv <- function(df, file) {
 fmt_date <- function(d) ifelse(is.na(d), "", format(d, "%d/%m/%Y"))
 
 #' One row of run_result.csv
+#' @param file_name    display name; defaults to the file part of file_path
+#' @param source_files PDFs a consolidated output was built from (" | " separated)
 result_row <- function(file_path, bank = NULL, st = NULL, ver = NULL, output_file = "",
-                       status = "ERROR", message = "", group_id = "") {
+                       status = "ERROR", message = "", group_id = "",
+                       file_name = NULL, source_files = "") {
   data.frame(file_path = file_path,
-             file_name = basename(file_path),
+             file_name = if (is.null(file_name)) file_label(file_path) else file_name,
+             source_files = source_files,
              group_id = group_id,
              bank_id = if (is.null(bank)) "" else bank$id,
              variant = if (is.null(bank)) "" else bank$variant,
@@ -48,7 +52,7 @@ detail_rows <- function(file_name, output_file, st, ver) {
   t <- st$txns
   has_row <- !is.na(f$row) & f$row >= 1 & f$row <= nrow(t)
   data.frame(file_name = file_name,
-             output_file = basename(output_file),
+             output_file = file_label(output_file),
              excel_row = ifelse(has_row, f$row + 1, NA),   # +1 for the header row
              date = ifelse(has_row, format(t$date[pmax(1, f$row)], "%d/%m/%Y"), ""),
              description = ifelse(has_row, sub("\n.*$", "", t$description[pmax(1, f$row)]), ""),

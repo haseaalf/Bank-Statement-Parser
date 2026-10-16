@@ -64,6 +64,8 @@ docs/bank_template.R             template parser bank baru
    - Pilih folder tujuan, atau pilih *Sama dengan folder PDF*.
    - Mode output: *Per file* (1 PDF menjadi 1 Excel) atau *Gabung per rekening*.
    - Pilih juga perlakuan jika file output sudah ada.
+   - **Nama file output**: *Sama dengan nama PDF* atau *Standar* (`<BANK>_<NoRek>_<yyyymmdd>-<yyyymmdd>.xlsx`).
+     Mode *Gabung per rekening* selalu memakai nama standar.
 3. **File.**
    - Klik **Pilih File PDF...** (bisa banyak file sekaligus), lalu **Deteksi Bank**.
    - Kolom *Bank* = `AUTO` berarti deteksi otomatis. Ubah ke kode bank tertentu jika deteksi salah

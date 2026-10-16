@@ -46,7 +46,7 @@ read_statement_pdf <- function(path, password = "") {
 
   lines <- build_lines(words)
 
-  list(path = path, file_name = basename(path), n_pages = length(text),
+  list(path = path, file_name = file_label(path), n_pages = length(text),
        text = text, words = words, lines = lines)
 }
 

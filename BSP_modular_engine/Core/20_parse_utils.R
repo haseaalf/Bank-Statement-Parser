@@ -105,6 +105,10 @@ date_from_day_month <- function(dm, period_start, period_end) {
 
 squish <- function(x) gsub("\\s+", " ", trimws(x))
 
+#' File name part of a path. Unlike basename(), it has no length limit
+#' (basename() fails with "path too long" above 260 characters on Windows).
+file_label <- function(x) sub("^.*[\\\\/]", "", x)
+
 #' Join description fragments into a multi-line description (as in the output format)
 join_desc <- function(parts) {
   parts <- squish(parts)

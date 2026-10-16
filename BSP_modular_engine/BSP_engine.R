@@ -8,7 +8,7 @@
 #
 # Input files (work folder)
 #   job_manifest.csv : file_path, bank_id (AUTO or id), variant, password
-#   job_options.csv  : key, value  (output_dir, output_mode, on_exists, tolerance, verify_only)
+#   job_options.csv  : key, value  (output_dir, output_mode, on_exists, tolerance, verify_only, name_style)
 # Output files (work folder)
 #   bank_registry.csv, detect_result.csv, run_result.csv, verification_detail.csv,
 #   consolidation_detail.csv, engine_log.txt, engine_done.txt
@@ -54,8 +54,9 @@ main <- function() {
   manifest[is.na(manifest)] <- ""
 
   opt_file <- file.path(work_dir, "job_options.csv")
+  # name_style: "original" (PDF name) or "standard" (BANK_account_period); consolidated is always standard
   opts <- list(output_dir = work_dir, output_mode = "per_file", on_exists = "suffix",
-               tolerance = "0.01", verify_only = "0")
+               tolerance = "0.01", verify_only = "0", name_style = "original")
   if (file.exists(opt_file)) {
     o <- tryCatch(utils::read.csv(opt_file, stringsAsFactors = FALSE, colClasses = "character",
                                   fileEncoding = "UTF-8-BOM"),
@@ -74,7 +75,7 @@ run_detect <- function(manifest) {
   out <- lapply(seq_len(nrow(manifest)), function(i) {
     m <- manifest[i, ]
     cat("Detect:", m$file_path, "\n")
-    base <- data.frame(file_path = m$file_path, file_name = basename(m$file_path),
+    base <- data.frame(file_path = m$file_path, file_name = file_label(m$file_path),
                        bank_id = "", variant = "", bank_name = "", score = NA, status = "ERROR",
                        message = "", account_no = "", account_name = "", period_start = "",
                        period_end = "", n_pages = NA, stringsAsFactors = FALSE)
@@ -151,10 +152,11 @@ run_parse <- function(manifest, opts, tol, verify_only) {
       next
     }
     out_file <- ""
-    gid <- group_key(res$bank$id, res$st$meta, basename(res$file_path))
+    gid <- group_key(res$bank$id, res$st$meta, file_label(res$file_path))
     if (!consolidated && !verify_only) {
-      out_file <- output_path(res$output_dir, tools::file_path_sans_ext(basename(res$file_path)),
-                              opts$on_exists)
+      base <- if (opts$name_style == "standard") standard_name(res$bank$id, res$st)
+              else tools::file_path_sans_ext(file_label(res$file_path))
+      out_file <- output_path(res$output_dir, base, opts$on_exists)
       saved <- safe_write(res$st$txns, res$bank$id, out_file)
       if (!isTRUE(saved)) {
         results[[length(results) + 1]] <- result_row(res$file_path, res$bank, res$st, res$ver, "",
@@ -164,17 +166,17 @@ run_parse <- function(manifest, opts, tol, verify_only) {
     }
     results[[length(results) + 1]] <- result_row(res$file_path, res$bank, res$st, res$ver, out_file,
                                                  res$ver$status, res$message, gid)
-    details[[length(details) + 1]] <- detail_rows(basename(res$file_path), out_file, res$st, res$ver)
+    details[[length(details) + 1]] <- detail_rows(file_label(res$file_path), out_file, res$st, res$ver)
   }
 
   # 3. Consolidated outputs: one per bank + account
   if (consolidated) {
     ok <- Filter(function(r) r$ok, parsed)
-    keys <- vapply(ok, function(r) group_key(r$bank$id, r$st$meta, basename(r$file_path)), "")
+    keys <- vapply(ok, function(r) group_key(r$bank$id, r$st$meta, file_label(r$file_path)), "")
     for (k in unique(keys)) {
       saved <- TRUE
       grp <- ok[keys == k]
-      items <- lapply(grp, function(r) list(file_name = basename(r$file_path), st = r$st))
+      items <- lapply(grp, function(r) list(file_name = file_label(r$file_path), st = r$st))
       cons <- consolidate_statements(items, tol)
       ver <- verify_statement(cons$st, tol)
       bank <- grp[[1]]$bank
@@ -182,20 +184,22 @@ run_parse <- function(manifest, opts, tol, verify_only) {
                 else if (ver$status == "WARN" || any(cons$findings$severity == "WARN")) "WARN" else "OK"
       out_file <- ""
       if (!verify_only) {
-        st <- cons$st
-        base <- paste(bank$id, ifelse(is.na(st$meta$account_no), "NA", st$meta$account_no),
-                      paste0(format(st$meta$period_start, "%Y%m%d"), "-", format(st$meta$period_end, "%Y%m%d")),
-                      sep = "_")
-        out_file <- output_path(grp[[1]]$output_dir, base, opts$on_exists)
-        saved <- safe_write(st$txns, bank$id, out_file)
+        # consolidated outputs always use the standard name
+        out_file <- output_path(grp[[1]]$output_dir, standard_name(bank$id, cons$st), opts$on_exists)
+        saved <- safe_write(cons$st$txns, bank$id, out_file)
         if (!isTRUE(saved)) { status <- "ERROR"; out_file <- "" }
       }
-      label <- paste0("[GABUNGAN ", length(cons$files), " file] ", paste(cons$files, collapse = " + "))
-      results[[length(results) + 1]] <- result_row(label, bank, cons$st, ver, out_file, status,
-                                                   if (isTRUE(saved)) "" else saved, k)
+      # short label (independent of the number of files); the full list goes to source_files
+      n <- length(cons$files)
+      label <- paste0("[GABUNGAN ", n, " file] ", cons$files[1],
+                      if (n > 1) paste0(" s/d ", cons$files[n]) else "")
+      results[[length(results) + 1]] <- result_row("", bank, cons$st, ver, out_file, status,
+                                                   if (isTRUE(saved)) "" else saved, k,
+                                                   file_name = label,
+                                                   source_files = paste(cons$files, collapse = " | "))
       details[[length(details) + 1]] <- detail_rows(label, out_file, cons$st, ver)
       if (nrow(cons$findings) > 0) {
-        cons_details[[length(cons_details) + 1]] <- cbind(group_id = k, output_file = basename(out_file),
+        cons_details[[length(cons_details) + 1]] <- cbind(group_id = k, output_file = file_label(out_file),
                                                           cons$findings)
       }
     }
@@ -205,14 +209,29 @@ run_parse <- function(manifest, opts, tol, verify_only) {
                              date = character(), description = character(), debit = numeric(),
                              credit = numeric(), balance = numeric(), check = character(),
                              severity = character(), message = character())
-  write_result_csv(do.call(rbind, results), file.path(work_dir, "run_result.csv"))
+  # each result file is written independently so one failure does not lose the others
+  safe_csv <- function(expr, file) {
+    tryCatch(write_result_csv(expr, file.path(work_dir, file)),
+             error = function(e) cat("ERROR writing", file, ":", conditionMessage(e), "\n"))
+  }
+  safe_csv(do.call(rbind, results), "run_result.csv")
   d <- do.call(rbind, details)
-  write_result_csv(if (is.null(d)) empty_detail else d, file.path(work_dir, "verification_detail.csv"))
+  safe_csv(if (is.null(d)) empty_detail else d, "verification_detail.csv")
   cd <- do.call(rbind, cons_details)
-  write_result_csv(if (is.null(cd)) data.frame(group_id = character(), output_file = character(),
-                                               file_name = character(), check = character(),
-                                               severity = character(), message = character()) else cd,
-                   file.path(work_dir, "consolidation_detail.csv"))
+  safe_csv(if (is.null(cd)) data.frame(group_id = character(), output_file = character(),
+                                       file_name = character(), check = character(),
+                                       severity = character(), message = character()) else cd,
+           "consolidation_detail.csv")
+}
+
+#' Standard output name: <BANK>_<account>_<yyyymmdd>-<yyyymmdd>
+#' (period from the statement, else first/last transaction date)
+standard_name <- function(bank_id, st) {
+  acc <- st$meta$account_no
+  acc <- if (is.na(acc) || acc == "") "NA" else gsub("[^0-9A-Za-z.-]", "", acc)
+  ps <- statement_start(st); pe <- statement_end(st)
+  per <- if (is.na(ps) || is.na(pe)) "NA" else paste0(format(ps, "%Y%m%d"), "-", format(pe, "%Y%m%d"))
+  paste(bank_id, acc, per, sep = "_")
 }
 
 status <- tryCatch({ main(); "OK" }, error = function(e) {

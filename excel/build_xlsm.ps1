@@ -36,6 +36,7 @@ function Invoke-Macro([string]$name, [int]$seconds, [object[]]$macroArgs = @()) 
         switch ($macroArgs.Count) {
             0 { return $excel.Run($name) }
             3 { return $excel.Run($name, $macroArgs[0], $macroArgs[1], $macroArgs[2]) }
+            4 { return $excel.Run($name, $macroArgs[0], $macroArgs[1], $macroArgs[2], $macroArgs[3]) }
         }
     } catch {
         $msg = "Macro $name tidak selesai dalam $seconds detik atau Excel berhenti (kemungkinan compile/runtime error VBA)."
@@ -78,6 +79,11 @@ try {
         New-Item -ItemType Directory -Force $out | Out-Null
         Write-Host "`n--- Self-test per file ($($pdfs.Count) PDF) ---"
         Write-Host (Invoke-Macro "BSP_Selftest" 900 @(($pdfs -join '|'), $out, 'per_file'))
+        Write-Host "--- Output files ---"
+        Get-ChildItem $out | ForEach-Object { Write-Host $_.Name }
+        Remove-Item (Join-Path $out '*') -Force
+        Write-Host "`n--- Self-test gabung per rekening (nama selalu standar) ---"
+        Write-Host (Invoke-Macro "BSP_Selftest" 900 @(($pdfs -join '|'), $out, 'consolidated', 'original'))
         Write-Host "--- Output files ---"
         Get-ChildItem $out | ForEach-Object { Write-Host $_.Name }
         $wb.Save()

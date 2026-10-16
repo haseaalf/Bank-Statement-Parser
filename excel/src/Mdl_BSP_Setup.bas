@@ -165,6 +165,11 @@ Public Sub BSP_Setup_UI()
     Put_Label ws, "B16", "Buka folder output setelah selesai"
     List_Cell ws, "C16", "Ya,Tidak", "Ya"
     Add_Name "BSP_Open_Folder", ws, "C16"
+    Put_Label ws, "B17", "Nama file output"
+    List_Cell ws, "C17", OPT_NAME_ORIGINAL & "," & OPT_NAME_STANDARD, OPT_NAME_ORIGINAL
+    Add_Name "BSP_Name_Style", ws, "C17"
+    Put_Label ws, "D17", "Mode gabung selalu memakai nama standar (BANK_NoRek_Periode)"
+    ws.Range("D17").Font.Color = RGB(120, 120, 120)
     Add_Name "BSP_Last_Input_Folder", ws, "N1"
     ws.Range("N1").Font.Color = RGB(255, 255, 255)
 

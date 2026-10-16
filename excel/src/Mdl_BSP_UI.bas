@@ -33,6 +33,8 @@ Public Const OPT_LOC_CHOSEN As String = "Folder pilihan di atas"
 Public Const OPT_LOC_PDF As String = "Sama dengan folder PDF"
 Public Const OPT_SUFFIX As String = "Beri akhiran (2) (3) dst"
 Public Const OPT_OVERWRITE As String = "Timpa file lama"
+Public Const OPT_NAME_ORIGINAL As String = "Sama dengan nama PDF"
+Public Const OPT_NAME_STANDARD As String = "Standar (BANK_NoRek_Periode)"
 
 Public Function BSP_UI() As Worksheet
     Set BSP_UI = ThisWorkbook.Worksheets(SHT_UI)
@@ -226,6 +228,9 @@ Private Sub Write_Options(verifyOnly As Boolean)
     txt = txt & "on_exists," & IIf(BSP_UI.Range("BSP_On_Exists").Value = OPT_OVERWRITE, "overwrite", "suffix") & vbLf
     txt = txt & "tolerance," & Replace(CStr(BSP_UI.Range("BSP_Tolerance").Value), ",", ".") & vbLf   'locale-safe decimal
     txt = txt & "verify_only," & IIf(verifyOnly, "1", "0") & vbLf
+    'consolidated outputs always get the standard name (the engine enforces it too)
+    txt = txt & "name_style," & IIf(BSP_UI.Range("BSP_Name_Style").Value = OPT_NAME_STANDARD Or _
+                                    BSP_UI.Range("BSP_Output_Mode").Value = OPT_CONSOLIDATED, "standard", "original") & vbLf
     BSP_Write_Text BSP_Work_Folder() & "\job_options.csv", txt
 End Sub
 
@@ -434,10 +439,10 @@ Private Sub Load_Results()
 
     cols = Array("file_name", "bank_id", "variant", "account_no", "account_name", "currency", "period_start", _
                  "period_end", "rows", "opening", "opening_source", "total_debit", "total_credit", "closing", _
-                 "n_error", "n_warn", "status", "output_file", "message")
+                 "n_error", "n_warn", "status", "output_file", "message", "source_files")
     heads = Array("File PDF", "Bank", "Format", "No. Rekening", "Nama Rekening", "Mata Uang", "Periode Awal", _
                   "Periode Akhir", "Jumlah Transaksi", "Saldo Awal", "Sumber Saldo Awal", "Total Debit", _
-                  "Total Kredit", "Saldo Akhir", "Error", "Warning", "Status", "File Output", "Pesan")
+                  "Total Kredit", "Saldo Akhir", "Error", "Warning", "Status", "File Output", "Pesan", "File Sumber (gabungan)")
 
     Set ws = ThisWorkbook.Worksheets(SHT_RESULT)
     ws.Cells.Clear
@@ -483,8 +488,9 @@ Private Sub Load_Results()
     ws.Range(ws.Cells(3, 1), ws.Cells(3, UBound(heads) + 1)).Interior.Color = RGB(31, 78, 121)
     ws.Range(ws.Cells(3, 1), ws.Cells(3, UBound(heads) + 1)).Font.Color = RGB(255, 255, 255)
     ws.Range("J:N").NumberFormat = "#,##0.00"
-    ws.Columns("A:S").AutoFit
+    ws.Columns("A:T").AutoFit
     If ws.Columns(1).ColumnWidth > 60 Then ws.Columns(1).ColumnWidth = 60
+    If ws.Columns(20).ColumnWidth > 80 Then ws.Columns(20).ColumnWidth = 80
     ws.Cells(UBound(data, 1) + 4, 1).Value = "Log engine: " & BSP_Work_Folder() & "\engine_log.txt"
 
 End Sub
@@ -566,7 +572,8 @@ End Sub
 
 '===== Automated self-test (used by excel\build_xlsm.ps1 -Test) ===============
 'pdfList: full paths separated by "|". Returns the collected messages + result statuses.
-Public Function BSP_Selftest(pdfList As String, outDir As String, outputMode As String) As String
+Public Function BSP_Selftest(pdfList As String, outDir As String, outputMode As String, _
+                             Optional ByVal nameStyle As String = "original") As String
     BSP_Trace "BSP_Selftest"
 
     Dim files() As String, i As Long, r As Long, ws As Worksheet, res As String
@@ -587,6 +594,7 @@ Public Function BSP_Selftest(pdfList As String, outDir As String, outputMode As 
     BSP_UI.Range("BSP_Output_Location").Value = OPT_LOC_CHOSEN
     BSP_UI.Range("BSP_Output_Mode").Value = IIf(outputMode = "consolidated", OPT_CONSOLIDATED, OPT_PER_FILE)
     BSP_UI.Range("BSP_On_Exists").Value = OPT_OVERWRITE
+    BSP_UI.Range("BSP_Name_Style").Value = IIf(nameStyle = "standard", OPT_NAME_STANDARD, OPT_NAME_ORIGINAL)
 
     BSP_Btn_Refresh_Banks
     BSP_Btn_Detect
@@ -607,6 +615,7 @@ Public Function BSP_Selftest(pdfList As String, outDir As String, outputMode As 
     BSP_UI.Range("BSP_Output_Folder").Value = ""
     BSP_UI.Range("BSP_On_Exists").Value = OPT_SUFFIX
     BSP_UI.Range("BSP_Output_Mode").Value = OPT_PER_FILE
+    BSP_UI.Range("BSP_Name_Style").Value = OPT_NAME_ORIGINAL
     ThisWorkbook.Worksheets(SHT_RESULT).Cells.Clear
     ThisWorkbook.Worksheets(SHT_VERIFY).Cells.Clear
     BSP_UI.Activate
