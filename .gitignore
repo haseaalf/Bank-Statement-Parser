@@ -1,0 +1,17 @@
+# Real bank statements and company tools contain confidential data - never commit them
+input output sample/
+other bank statement sample/
+BSA_v21.xlsm
+20230120 BSA_modular_engine_vF/
+*.pdf
+
+# Engine run artefacts
+BSP_modular_engine/sink-log.txt
+_bsp_work/
+tests/output/
+
+# Office temp / lock files
+~$*
+*.tmp
+.Rhistory
+.RData

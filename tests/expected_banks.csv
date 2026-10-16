@@ -1,0 +1,10 @@
+pattern,bank_id
+MUNTILAN,BRI
+^BCA,BCA
+^BNI,BNI
+^BPD DIY,BPD_DIY
+^BSI,BSI
+^CIMB,CIMB
+^Mandiri,MANDIRI
+^Maybank,MAYBANK
+^Bank Natasha,BPR_NATASHA
