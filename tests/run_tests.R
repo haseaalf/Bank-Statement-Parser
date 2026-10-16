@@ -60,6 +60,11 @@ if (length(pdfs) == 0) {
           "| hasil =", shQuote(gsub("\n", "\\\\n", g[[2]][i])), "\n")
     }
     check(res$ver$status == "OK", paste("verifikasi", res$ver$status))
+    # Excel refuses packages with folder entries or parts that point to missing files
+    zl <- zip::zip_list(out_file)$filename
+    rels <- paste(readLines(unz(out_file, "xl/worksheets/_rels/sheet1.xml.rels"), warn = FALSE), collapse = "")
+    check(!any(grepl("/$", zl)) && zl[1] == "[Content_Types].xml" && !grepl("drawing", rels),
+          "paket xlsx bersih (tanpa entri folder / relasi ke file yang tidak ada)")
   }
 }
 

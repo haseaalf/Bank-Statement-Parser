@@ -80,8 +80,11 @@ clean_xlsx_package <- function(file) {
   writeLines(ct, ct_path, useBytes = TRUE)
 
   if (changed) {
+    # Excel rejects packages with folder entries: zip the files only, [Content_Types].xml first
+    files <- c("[Content_Types].xml", setdiff(list.files(tmp, recursive = TRUE, all.files = TRUE),
+                                              "[Content_Types].xml"))
     unlink(file)
-    zip::zipr(file, files = file.path(tmp, c("[Content_Types].xml", setdiff(list.files(tmp, all.files = TRUE, no.. = TRUE), "[Content_Types].xml"))))
+    zip::zip(file, files = files, root = tmp, mode = "mirror", include_directories = FALSE)
   }
   invisible(file)
 }
