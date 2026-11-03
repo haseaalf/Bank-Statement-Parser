@@ -77,7 +77,12 @@ verify_statement <- function(st, tol = 0.01) {
   ob <- if (!is.null(st$opening)) st$opening else opening_balance(st)
 
   if (n == 0) {
-    f <- add_finding(f, NA, "rows", "ERROR", "Tidak ada transaksi yang terbaca")
+    # a month without activity is valid as long as the stated balances agree (checked below)
+    s0 <- st$stated
+    confirmed <- !is.na(s0$closing) || !is.na(s0$total_debit) || !is.na(s0$total_credit)
+    f <- add_finding(f, NA, "rows", if (confirmed) "INFO" else "WARN",
+                     if (confirmed) "Tidak ada transaksi pada periode ini"
+                     else "Tidak ada transaksi terbaca dan PDF tidak memuat ringkasan - mohon periksa PDF")
   }
 
   if (ob$source == "derived") {

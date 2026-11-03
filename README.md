@@ -87,6 +87,24 @@ docs/bank_template.R             template parser bank baru
 Output tetap dibuat walaupun ada ERROR/WARN. Saldo yang tidak dicetak bank (BCA hanya mencetak saldo
 akhir hari; baris terakhir BNI) dihitung lalu dicocokkan dengan saldo yang tercetak.
 
+### Rekap mutasi
+
+Pilih **Buat rekap mutasi = Ya** sebelum **PROSES**. Semua PDF dalam satu proses (boleh banyak bank, rekening,
+dan nasabah sekaligus, dalam urutan apa pun) diringkas ke satu file `<yyyymmdd>_<hhmm>_rekap_mutasi.xlsx`:
+
+- **REKAP**: Bank, Nomor Rekening (teks, nol di depan tetap ada), Nama Nasabah, Debit, Kredit, Saldo, %.
+  - Debit dan Kredit adalah total semua bulan.
+  - Saldo adalah rata-rata saldo akhir bulan.
+  - % adalah porsi saldo terhadap jumlah semua rekening.
+  - Di bawahnya ada baris Jumlah, *Penjualan L/R Periode ...* (isi manual), dan *% Transaksi Bank*
+    (= total kredit / penjualan, otomatis terhitung setelah penjualan diisi).
+- **Satu sheet per rekening** (nama sheet = nomor rekening), berisi BULAN | DEBET | KREDIT | SALDO AKHIR BULAN,
+  diikuti baris Total dan Ratas. Rentang bulannya sama untuk semua rekening.
+- **Verifikasi per bulan**: saldo akhir bulan lalu + kredit - debit harus sama dengan saldo akhir bulan ini.
+  Masalah ditulis sebagai `PERINGATAN` di kolom E di samping baris bulannya. Contohnya selisih saldo,
+  bulan yang tidak di-upload, bulan yang tidak bersambung, file duplikat, dan periode tumpang tindih.
+  Ringkasannya juga muncul di kolom H sheet REKAP, serta di sheet Hasil/Verifikasi BSP.
+
 ### Konsolidasi
 
 - File digabung per **bank + nomor rekening + mata uang**, lalu diurutkan menurut periode.

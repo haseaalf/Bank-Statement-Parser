@@ -170,20 +170,25 @@ Public Sub BSP_Setup_UI()
     Add_Name "BSP_Name_Style", ws, "C17"
     Put_Label ws, "D17", "Mode gabung selalu memakai nama standar (BANK_NoRek_Periode)"
     ws.Range("D17").Font.Color = RGB(120, 120, 120)
+    Put_Label ws, "B18", "Buat rekap mutasi (semua file)"
+    List_Cell ws, "C18", "Ya,Tidak", "Tidak"
+    Add_Name "BSP_Recap", ws, "C18"
+    Put_Label ws, "D18", "1 file <tanggal>_<jam>_rekap_mutasi.xlsx: sheet REKAP + 1 sheet per rekening, dengan cek saldo bulanan"
+    ws.Range("D18").Font.Color = RGB(120, 120, 120)
     Add_Name "BSP_Last_Input_Folder", ws, "N1"
     ws.Range("N1").Font.Color = RGB(255, 255, 255)
 
     '--- 3. Files + actions
-    Put_Label ws, "A18", "3. File rekening koran", True
-    Put_Label ws, "B19", "Kolom Bank: AUTO = deteksi otomatis, atau pilih bank secara manual. Isi Password bila PDF terkunci."
-    ws.Range("B19").Font.Color = RGB(120, 120, 120)
-    Add_Button ws, "B20", 110, "Pilih File PDF...", "BSP_Btn_Select_Files"
-    Add_Button ws, "C20", 100, "Deteksi Bank", "BSP_Btn_Detect"
-    Add_Button ws, "D20", 120, "PROSES", "BSP_Btn_Process"
-    Add_Button ws, "F20", 110, "Verifikasi saja", "BSP_Btn_Verify_Only"
-    Add_Button ws, "I20", 110, "Hapus daftar", "BSP_Btn_Clear_Files"
-    Add_Button ws, "J20", 130, "Perbarui daftar bank", "BSP_Btn_Refresh_Banks"
-    ws.Rows(20).RowHeight = 22
+    Put_Label ws, "A19", "3. File rekening koran", True
+    Put_Label ws, "B20", "Kolom Bank: AUTO = deteksi otomatis, atau pilih bank secara manual. Isi Password bila PDF terkunci."
+    ws.Range("B20").Font.Color = RGB(120, 120, 120)
+    Add_Button ws, "B21", 110, "Pilih File PDF...", "BSP_Btn_Select_Files"
+    Add_Button ws, "C21", 100, "Deteksi Bank", "BSP_Btn_Detect"
+    Add_Button ws, "D21", 120, "PROSES", "BSP_Btn_Process"
+    Add_Button ws, "F21", 110, "Verifikasi saja", "BSP_Btn_Verify_Only"
+    Add_Button ws, "I21", 110, "Hapus daftar", "BSP_Btn_Clear_Files"
+    Add_Button ws, "J21", 130, "Perbarui daftar bank", "BSP_Btn_Refresh_Banks"
+    ws.Rows(21).RowHeight = 22
 
     heads = Array("No", "File PDF", "Bank", "Format (opsional)", "Password", "Bank terdeteksi", "Skor", _
                   "No. Rekening", "Nama Rekening", "Periode", "Status", "Pesan")

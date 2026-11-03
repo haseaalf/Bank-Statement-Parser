@@ -13,7 +13,7 @@ Public Const SHT_RESULT As String = "Hasil"
 Public Const SHT_VERIFY As String = "Verifikasi"
 Public Const SHT_BANKS As String = "Daftar Bank"
 
-Public Const TBL_HDR_ROW As Long = 22          'file table header row on the BSP sheet
+Public Const TBL_HDR_ROW As Long = 23          'file table header row on the BSP sheet
 Public Const COL_NO As Long = 1
 Public Const COL_FILE As Long = 2
 Public Const COL_BANK As Long = 3
@@ -231,6 +231,7 @@ Private Sub Write_Options(verifyOnly As Boolean)
     'consolidated outputs always get the standard name (the engine enforces it too)
     txt = txt & "name_style," & IIf(BSP_UI.Range("BSP_Name_Style").Value = OPT_NAME_STANDARD Or _
                                     BSP_UI.Range("BSP_Output_Mode").Value = OPT_CONSOLIDATED, "standard", "original") & vbLf
+    txt = txt & "recap," & IIf(BSP_UI.Range("BSP_Recap").Value = "Ya", "1", "0") & vbLf
     BSP_Write_Text BSP_Work_Folder() & "\job_options.csv", txt
 End Sub
 
@@ -595,6 +596,7 @@ Public Function BSP_Selftest(pdfList As String, outDir As String, outputMode As 
     BSP_UI.Range("BSP_Output_Mode").Value = IIf(outputMode = "consolidated", OPT_CONSOLIDATED, OPT_PER_FILE)
     BSP_UI.Range("BSP_On_Exists").Value = OPT_OVERWRITE
     BSP_UI.Range("BSP_Name_Style").Value = IIf(nameStyle = "standard", OPT_NAME_STANDARD, OPT_NAME_ORIGINAL)
+    BSP_UI.Range("BSP_Recap").Value = IIf(outputMode = "consolidated", "Ya", "Tidak")   'self-test: the consolidated run also builds the recap
 
     BSP_Btn_Refresh_Banks
     BSP_Btn_Detect
@@ -616,6 +618,7 @@ Public Function BSP_Selftest(pdfList As String, outDir As String, outputMode As 
     BSP_UI.Range("BSP_On_Exists").Value = OPT_SUFFIX
     BSP_UI.Range("BSP_Output_Mode").Value = OPT_PER_FILE
     BSP_UI.Range("BSP_Name_Style").Value = OPT_NAME_ORIGINAL
+    BSP_UI.Range("BSP_Recap").Value = "Tidak"
     ThisWorkbook.Worksheets(SHT_RESULT).Cells.Clear
     ThisWorkbook.Worksheets(SHT_VERIFY).Cells.Clear
     BSP_UI.Activate

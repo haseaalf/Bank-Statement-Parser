@@ -210,5 +210,46 @@ row <- tryCatch(result_row("", file_name = "[GABUNGAN 6 file] a s/d f", source_f
                 error = function(e) NULL)
 check(!is.null(row) && length(strsplit(row$source_files, " \\| ")[[1]]) == 6, "baris gabungan 6 file dengan source_files")
 
+# ---- 6. Monthly recap (rekap mutasi) ------------------------------------------------
+cat("\n[6] Rekap mutasi\n")
+ita <- file.path(repo, "mutasi_ITA YUNI ASTUTI", "668001019813539")
+if (!dir.exists(ita) || length(all_pdfs) == 0 || length(only) > 0) {
+  cat("  SKIP (folder mutasi_ITA YUNI ASTUTI tidak ada)\n")
+} else {
+  ita_pdfs <- sort(list.files(ita, pattern = "[.]pdf$", full.names = TRUE))
+  # skip June 2026 (missing month) and upload March 2026 twice (duplicate)
+  use <- c(ita_pdfs[!grepl("20260601", ita_pdfs)], ita_pdfs[grepl("20260301", ita_pdfs)], all_pdfs)
+  parsed <- lapply(use, function(p) {
+    r <- run_file(p)
+    list(ok = TRUE, bank = r$bank, st = r$st, file_path = p)
+  })
+  # the second March upload gets its own name, as a re-uploaded copy would
+  dup_i <- length(ita_pdfs)
+  parsed[[dup_i]]$file_path <- sub("[.]pdf$", " (copy).pdf", parsed[[dup_i]]$file_path)
+  rc <- build_recap(parsed)
+  acc <- Filter(function(a) identical(a$account_no, "668001019813539"), rc$accounts)[[1]]
+  tb <- acc$table
+  w <- function(m) tb$warning[tb$month == m]
+  names_n <- length(unique(vapply(rc$accounts, function(a) a$account_name %||% "", "")))
+  check(length(rc$accounts) == length(all_pdfs) + 1 && names_n >= 3,
+        paste0("banyak bank/rekening/nasabah: ", length(rc$accounts), " rekening, ", names_n, " nasabah, ",
+               length(rc$months), " bulan"))
+  check(!tb$has_data[tb$month == "2026-06"] && grepl("tidak ada", w("2026-06")), "bulan hilang (Jun 2026) ditandai")
+  check(grepl("tidak bersambung", w("2026-07")), "bulan sesudahnya (Jul 2026) diberi warning urutan")
+  check(grepl("Duplikat", w("2026-03")), "file duplikat (Mar 2026) diberi warning")
+  check(!any(grepl("Saldo bulan lalu", tb$warning)), "saldo bulan lalu + kredit - debit = saldo di semua bulan")
+  check(isTRUE(all.equal(tb$saldo[tb$month == "2026-10"], 27516964)), "saldo akhir Okt 2026 = 27.516.964")
+  one <- Filter(function(a) a$bank_id == "BCA", rc$accounts)[[1]]$table
+  check(sum(one$has_data) == 1 && !any(nzchar(one$warning)),
+        "rekening 1 bulan: bulan di luar periodenya kosong tanpa warning")
+  f <- file.path(out_dir, "rekap_test.xlsx")
+  write_recap_xlsx(rc, f)
+  sh <- openxlsx::getSheetNames(f)
+  check(sh[1] == "REKAP" && length(sh) == length(rc$accounts) + 1 && "668001019813539" %in% sh,
+        "workbook rekap: REKAP + 1 sheet per rekening")
+  x <- openxlsx::read.xlsx(f, sheet = "668001019813539", colNames = FALSE, skipEmptyCols = FALSE)
+  check(ncol(x) >= 5 && any(grepl("PERINGATAN", x[[5]])), "warning tertulis di kolom E sheet rekening")
+}
+
 cat("\n", if (failures == 0) "SEMUA TES LULUS" else paste(failures, "TES GAGAL"), "\n")
 quit(status = if (failures == 0) 0 else 1)

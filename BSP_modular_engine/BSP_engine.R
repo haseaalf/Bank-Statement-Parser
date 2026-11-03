@@ -8,7 +8,7 @@
 #
 # Input files (work folder)
 #   job_manifest.csv : file_path, bank_id (AUTO or id), variant, password
-#   job_options.csv  : key, value  (output_dir, output_mode, on_exists, tolerance, verify_only, name_style)
+#   job_options.csv  : key, value  (output_dir, output_mode, on_exists, tolerance, verify_only, name_style, recap)
 # Output files (work folder)
 #   bank_registry.csv, detect_result.csv, run_result.csv, verification_detail.csv,
 #   consolidation_detail.csv, engine_log.txt, engine_done.txt
@@ -56,7 +56,7 @@ main <- function() {
   opt_file <- file.path(work_dir, "job_options.csv")
   # name_style: "original" (PDF name) or "standard" (BANK_account_period); consolidated is always standard
   opts <- list(output_dir = work_dir, output_mode = "per_file", on_exists = "suffix",
-               tolerance = "0.01", verify_only = "0", name_style = "original")
+               tolerance = "0.01", verify_only = "0", name_style = "original", recap = "0")
   if (file.exists(opt_file)) {
     o <- tryCatch(utils::read.csv(opt_file, stringsAsFactors = FALSE, colClasses = "character",
                                   fileEncoding = "UTF-8-BOM"),
@@ -203,6 +203,45 @@ run_parse <- function(manifest, opts, tol, verify_only) {
                                                           cons$findings)
       }
     }
+  }
+
+  # 4. Monthly recap over all accounts / banks / customers in this batch
+  if (opts$recap %in% c("1", "TRUE", "true")) {
+    res <- tryCatch({
+      recap <- build_recap(parsed, tol)
+      if (is.null(recap)) stop_bsp("RECAP_EMPTY", "Tidak ada rekening koran yang berhasil diproses untuk rekap")
+      warn_rows <- do.call(rbind, lapply(seq_along(recap$accounts), function(i) {
+        a <- recap$accounts[[i]]; w <- a$table[nzchar(a$table$warning), ]
+        if (nrow(w) == 0) return(NULL)
+        data.frame(group_id = "REKAP", output_file = "", file_name = paste(a$bank_id, a$account_no),
+                   check = "rekap", severity = "WARN",
+                   message = paste0(format(month_first(w$month), "%m/%Y"), ": ", w$warning), stringsAsFactors = FALSE)
+      }))
+      out_file <- ""
+      if (!verify_only) {
+        dir <- Filter(nzchar, vapply(parsed, function(r) r$output_dir %||% "", ""))[[1]]
+        out_file <- output_path(dir, paste0(format(Sys.time(), "%Y%m%d_%H%M"), "_rekap_mutasi"), opts$on_exists)
+        write_recap_xlsx(recap, out_file)
+        cat("Written (recap):", out_file, "\n")
+      }
+      if (!is.null(warn_rows)) {
+        warn_rows$output_file <- file_label(out_file)
+        cons_details[[length(cons_details) + 1]] <- warn_rows
+      }
+      names_n <- length(unique(vapply(recap$accounts, function(a) a$account_name %||% "", "")))
+      label <- paste0("[REKAP] ", length(recap$accounts), " rekening, ", names_n, " nasabah, ",
+                      length(recap$months), " bulan")
+      result_row("", output_file = out_file, status = if (is.null(warn_rows)) "OK" else "WARN",
+                 message = if (is.null(warn_rows)) "" else paste(nrow(warn_rows), "bulan perlu dicek (lihat kolom E di sheet rekening)"),
+                 group_id = "REKAP", file_name = label,
+                 source_files = paste(vapply(recap$accounts, function(a) paste(a$bank_id, a$account_no), ""),
+                                      collapse = " | "))
+    }, error = function(e) {
+      cat("ERROR recap:", conditionMessage(e), "\n")
+      result_row("", message = paste("Rekap gagal dibuat:", conditionMessage(e)), group_id = "REKAP",
+                 file_name = "[REKAP]")
+    })
+    results[[length(results) + 1]] <- res
   }
 
   empty_detail <- data.frame(file_name = character(), output_file = character(), excel_row = integer(),

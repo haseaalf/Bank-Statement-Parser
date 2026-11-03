@@ -1,6 +1,7 @@
 # Real bank statements and company tools contain confidential data - never commit them
 input output sample/
 other bank statement sample/
+mutasi_*/
 BSA_v21.xlsm
 20230120 BSA_modular_engine_vF/
 *.pdf
