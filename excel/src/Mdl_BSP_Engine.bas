@@ -93,20 +93,81 @@ Public Function BSP_RScript_Path() As String
     End If
 End Function
 
-'Newest R installed under Program Files (used to pre-fill the R folder)
+'Folder of Rscript.exe: the one recorded by Install_BSP.bat (bsp_config.txt next to the
+'workbook), else the newest R under Program Files, the per-user Programs folder or Documents
 Public Function BSP_Find_R_Folder() As String
-    Dim base As String, d As String, best As String
-    base = Environ("ProgramFiles") & "\R\"
-    If Len(Dir(base, vbDirectory)) = 0 Then Exit Function
-    d = Dir(base & "R-*", vbDirectory)
-    Do While d <> ""
-        If d > best Then best = d
-        d = Dir()
-    Loop
-    If best <> "" Then
-        If Len(Dir(base & best & "\bin\Rscript.exe")) > 0 Then BSP_Find_R_Folder = base & best & "\bin"
+    Dim cfg As String, bases As Variant, b As Variant, d As String, best As String, bestDir As String
+
+    cfg = BSP_Config_Value("RSCRIPT_DIR")
+    If cfg <> "" Then
+        If Len(Dir(cfg & "\Rscript.exe")) > 0 Then
+            BSP_Find_R_Folder = cfg
+            Exit Function
+        End If
     End If
+
+    bases = Array(Environ("ProgramFiles") & "\R\", Environ("LOCALAPPDATA") & "\Programs\R\", _
+                  Environ("USERPROFILE") & "\Documents\R\")
+    For Each b In bases
+        If Len(Dir(b, vbDirectory)) > 0 Then
+            d = Dir(b & "R-*", vbDirectory)
+            Do While d <> ""
+                If Len(Dir(b & d & "\bin\Rscript.exe")) > 0 Then
+                    If Version_Key(d) > Version_Key(best) Then
+                        best = d
+                        bestDir = b & d & "\bin"
+                    End If
+                End If
+                d = Dir()
+            Loop
+        End If
+    Next b
+    BSP_Find_R_Folder = bestDir
 End Function
+
+'"R-4.10.1" -> "004010001" so versions compare correctly as text
+Private Function Version_Key(folder As String) As String
+    Dim p() As String, i As Long, k As String
+    If folder = "" Then Exit Function
+    p = Split(Mid(folder, 3), ".")
+    For i = 0 To 2
+        If i <= UBound(p) Then k = k & Format(Val(p(i)), "000") Else k = k & "000"
+    Next i
+    Version_Key = k
+End Function
+
+'Value from bsp_config.txt (KEY=value lines) next to the workbook; "" when absent
+Public Function BSP_Config_Value(key As String) As String
+    Dim f As String, lines() As String, i As Long
+    f = ThisWorkbook.Path & "\bsp_config.txt"
+    If Len(Dir(f)) = 0 Then Exit Function
+    lines = Split(Replace(BSP_Read_Text(f), vbCr, ""), vbLf)
+    For i = 0 To UBound(lines)
+        If UCase(Left(lines(i), Len(key) + 1)) = UCase(key) & "=" Then
+            BSP_Config_Value = Trim(Mid(lines(i), Len(key) + 2))
+            Exit Function
+        End If
+    Next i
+End Function
+
+'Runs when the workbook is opened with macros enabled: repair folder settings that do not
+'exist on this PC (e.g. the workbook was copied from another computer)
+Public Sub Auto_Open()
+    Dim ws As Worksheet, engine As String, cfg As String
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets("BSP")
+    If ws Is Nothing Then Exit Sub
+    If BSP_RScript_Path() = "" Then ws.Range("BSP_R_Folder").Value = BSP_Find_R_Folder()
+    engine = BSP_Clean_Path(ws.Range("BSP_Engine_Folder").Value)
+    If engine = "" Or Len(Dir(engine & "\" & BSP_ENGINE_ENTRY)) = 0 Then
+        cfg = BSP_Config_Value("ENGINE_DIR")
+        If cfg <> "" And Len(Dir(cfg & "\" & BSP_ENGINE_ENTRY)) > 0 Then
+            ws.Range("BSP_Engine_Folder").Value = cfg
+        ElseIf Len(Dir(ThisWorkbook.Path & "\BSP_modular_engine\" & BSP_ENGINE_ENTRY)) > 0 Then
+            ws.Range("BSP_Engine_Folder").Value = ThisWorkbook.Path & "\BSP_modular_engine"
+        End If
+    End If
+End Sub
 
 Public Function BSP_Clean_Path(ByVal p As String) As String
     p = Trim(p)

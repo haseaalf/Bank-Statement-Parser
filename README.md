@@ -38,11 +38,33 @@ tools/dump_lines.R               alat bantu membuat parser: tampilkan baris & po
 docs/bank_template.R             template parser bank baru
 ```
 
-## Persiapan (sekali)
+## Instalasi 1 klik (untuk pengguna)
 
-1. **R** (sudah dites dengan R 4.2.2). Paket `pdftools` dan `openxlsx` terpasang otomatis saat engine
-   pertama kali berjalan. Jika internet kantor memblokir CRAN, taruh paketnya di
-   `BSP_modular_engine/r-library/`.
+1. Salin atau ekstrak seluruh folder program ke PC.
+2. Double-click **`Install_BSP.bat`**. Hak administrator tidak diperlukan. Skrip ini akan:
+   - memeriksa Windows dan Microsoft Excel;
+   - mencari R (versi 4.1 ke atas). Jika belum ada, R **4.2.2** (versi yang sudah teruji) diunduh dari
+     CRAN dan dipasang khusus untuk user tersebut di `%LOCALAPPDATA%\Programs\R`;
+   - memasang paket `pdftools`, `openxlsx`, dan `zip` ke `BSP_modular_engine\r-library\<versi R>`;
+   - melepas blokir "file dari internet" pada file program, supaya macro `BSP_v1.xlsm` tidak diblokir;
+   - menulis `bsp_config.txt` (lokasi R dan engine) dan membuat shortcut **Bank Statement Parser** di
+     desktop;
+   - menjalankan engine sekali sebagai uji coba.
+3. Buka shortcut tersebut, klik **Enable Content** bila diminta, lalu **Perbarui daftar bank**.
+
+Saat dibuka, workbook memperbaiki sendiri lokasi R dan engine yang tidak ditemukan, misalnya karena
+folder dipindah atau disalin dari PC lain. Log instalasi ada di `setup\install_log.txt`.
+
+**PC tanpa internet:** di PC yang punya internet, jalankan `Install_BSP.bat -PrepareOffline`. Perintah
+ini mengunduh installer R dan paket R ke `setup\offline\`. Salin seluruh folder program ke PC tujuan,
+lalu jalankan `Install_BSP.bat` di sana; skrip otomatis memakai file offline tersebut.
+
+Opsi lain: `-RVersion 4.x.y` (versi R yang dipasang bila R belum ada) dan `-NoShortcut`.
+
+## Persiapan untuk developer
+
+1. **R** (sudah dites dengan R 4.2.2). Jalankan `Install_BSP.bat`, atau biarkan engine memasang
+   paketnya sendiri saat pertama kali berjalan.
 2. **Bangun `BSP_v1.xlsm`.**
    - Di Excel, aktifkan *File > Options > Trust Center > Trust Center Settings > Macro Settings >
      Trust access to the VBA project object model*.

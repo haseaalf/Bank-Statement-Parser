@@ -2,6 +2,8 @@
 input output sample/
 other bank statement sample/
 mutasi_*/
+mutasi/
+mutasi*.zip
 BSA_v21.xlsm
 20230120 BSA_modular_engine_vF/
 *.pdf
@@ -16,3 +18,9 @@ tests/output/
 *.tmp
 .Rhistory
 .RData
+
+# Created by Install_BSP.bat on each PC
+BSP_modular_engine/r-library/
+bsp_config.txt
+setup/install_log.txt
+setup/offline/

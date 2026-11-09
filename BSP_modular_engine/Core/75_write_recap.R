@@ -6,7 +6,6 @@
 #'                   warnings are written in column E next to the month row
 
 RECAP_BLUE  <- "#00B0F0"
-RECAP_GREEN <- "#92D050"
 ACCOUNTING  <- '_-* #,##0_-;\\-* #,##0_-;_-* "-"??_-;_-@_-'
 MONTH_FMT   <- "[$-409]mmmm\\-yy;@"
 
@@ -125,7 +124,7 @@ write_recap_xlsx <- function(recap, file) {
   months <- month_first(recap$months)
   for (i in seq_len(n)) {
     a <- accounts[[i]]; s <- sheets[i]; tb <- a$table
-    fill <- if (i == 1) RECAP_BLUE else RECAP_GREEN
+    fill <- RECAP_BLUE                          # same blue header on every account sheet
     openxlsx::addWorksheet(wb, s)
     openxlsx::writeData(wb, s, t(c("BULAN", "DEBET", "KREDIT", "SALDO AKHIR BULAN")), startRow = 1, colNames = FALSE)
     openxlsx::addStyle(wb, s, st(fontName = "Calibri", fontSize = 11, textDecoration = "bold", halign = "center",

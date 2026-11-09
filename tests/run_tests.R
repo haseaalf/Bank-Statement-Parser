@@ -212,6 +212,20 @@ check(!is.null(row) && length(strsplit(row$source_files, " \\| ")[[1]]) == 6, "b
 
 # ---- 6. Monthly recap (rekap mutasi) ------------------------------------------------
 cat("\n[6] Rekap mutasi\n")
+if (length(all_pdfs) > 0 && length(only) == 0) {
+  # format check with the sample banks (one account each)
+  parsed_s <- lapply(all_pdfs, function(p) { r <- run_file(p); list(ok = TRUE, bank = r$bank, st = r$st, file_path = p) })
+  fs <- file.path(out_dir, "rekap_format.xlsx")
+  write_recap_xlsx(build_recap(parsed_s), fs)
+  wbx <- openxlsx::loadWorkbook(fs)
+  fills <- unique(unlist(lapply(openxlsx::getSheetNames(fs)[-1], function(s) {
+    st <- wbx$styleObjects[vapply(wbx$styleObjects, function(o) o$sheet == s, TRUE)]
+    vapply(st, function(o) if (is.null(o$style$fill$fillFg)) "" else unname(o$style$fill$fillFg[[1]]), "")
+  })))
+  fills <- toupper(fills[nzchar(fills)])
+  check(length(fills) == 1 && grepl("00B0F0$", fills),
+        paste("semua sheet rekening memakai header biru:", paste(fills, collapse = ", ")))
+}
 ita <- file.path(repo, "mutasi_ITA YUNI ASTUTI", "668001019813539")
 if (!dir.exists(ita) || length(all_pdfs) == 0 || length(only) > 0) {
   cat("  SKIP (folder mutasi_ITA YUNI ASTUTI tidak ada)\n")
