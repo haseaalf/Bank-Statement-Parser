@@ -28,6 +28,7 @@ engine membaca semua script di foldernya, lalu hasilnya dibaca kembali oleh VBA.
 
 ```
 BSP_v1.xlsm                      UI Excel (dibangun dari excel/src dengan excel/build_xlsm.ps1)
+app/BSP.cs                       aplikasi BSP.exe tanpa Excel (dikompilasi di PC tujuan oleh setup/build_exe.ps1)
 BSP_modular_engine/
   BSP_engine.R                   entry: Rscript BSP_engine.R <folder kerja> <folder engine> <list_banks|detect|parse>
   Core/                          baca PDF, util angka/tanggal, registry, deteksi, verifikasi, konsolidasi, writer xlsx
@@ -37,6 +38,24 @@ tests/run_tests.R                tes golden BRI + semua sampel + konsolidasi + e
 tools/dump_lines.R               alat bantu membuat parser: tampilkan baris & posisi kata sebuah PDF
 docs/bank_template.R             template parser bank baru
 ```
+
+## BSP.exe: aplikasi tanpa Excel
+
+`Install_BSP.bat` juga membuat **`BSP.exe`** di komputer tujuan. File ini dikompilasi dari `app\BSP.cs`
+memakai compiler C# bawaan Windows (.NET Framework 4.x), jadi tidak ada tool yang perlu dipasang.
+Karena dibuat di PC itu sendiri, SmartScreen tidak menahannya sebagai file unduhan. Shortcut desktop
+diarahkan ke `BSP.exe`.
+
+- Fungsinya sama dengan `BSP_v1.xlsm`: pilih/tarik PDF, deteksi bank, opsi output, rekap mutasi,
+  PROSES/Verifikasi saja, serta tab Hasil, Verifikasi, dan Daftar Bank. Engine R yang dipakai juga sama.
+- Tidak membutuhkan Excel maupun WPS. File hasil tetap `.xlsx` dan bisa dibuka di Excel, WPS,
+  LibreOffice, atau Google Sheets.
+- `BSP.exe` harus tetap berada di folder program (di samping `BSP_modular_engine`).
+- Pengaturan disimpan per user di `%APPDATA%\BSP\settings.ini`.
+- Untuk membangun ulang saja: `powershell -ExecutionPolicy Bypass -File setup\build_exe.ps1`.
+- Uji otomatis tanpa jendela:
+  `BSP.exe --selftest "<pdf1|pdf2>" "<folder output>" per_file|consolidated 0|1 "<laporan.txt>"`.
+- Bila kebijakan kantor (AppLocker/WDAC) melarang exe buatan sendiri, `BSP_v1.xlsm` tetap bisa dipakai.
 
 ## Instalasi 1 klik (untuk pengguna)
 

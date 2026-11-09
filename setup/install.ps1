@@ -6,8 +6,9 @@
 #  3. Installs the R packages into BSP_modular_engine\r-library\<R version> (online or offline)
 #  4. Removes the "downloaded from the internet" block from the program files (so Excel
 #     does not block the macros of BSP_v1.xlsm)
-#  5. Writes bsp_config.txt (paths used by the workbook) and a desktop shortcut
-#  6. Self-check: runs the engine once
+#  5. Builds BSP.exe on this PC (setup\build_exe.ps1, built-in .NET compiler - no Excel needed)
+#  6. Writes bsp_config.txt and a desktop shortcut (to BSP.exe, else BSP_v1.xlsm)
+#  7. Self-check: runs the engine once
 #
 # Options:
 #   -RVersion 4.2.2     R version to install when R is missing
@@ -27,7 +28,7 @@ $packages = @('pdftools', 'openxlsx', 'zip')
 
 try { Start-Transcript -Path $log -Force | Out-Null } catch { }
 
-function Step($n, $text) { Write-Host ""; Write-Host "[$n/6] $text" -ForegroundColor Cyan }
+function Step($n, $text) { Write-Host ""; Write-Host "[$n/7] $text" -ForegroundColor Cyan }
 function Ok($text)   { Write-Host "      OK  $text" -ForegroundColor Green }
 function Warn($text) { Write-Host "      !!  $text" -ForegroundColor Yellow }
 function Fail($text) { Write-Host "      GAGAL  $text" -ForegroundColor Red; throw $text }
@@ -126,7 +127,7 @@ download.packages(deps, destdir = '$($offline -replace '\\','/')/packages-$mm', 
                "$env:ProgramFiles\Microsoft Office\Office16\EXCEL.EXE",
                "${env:ProgramFiles(x86)}\Microsoft Office\Office16\EXCEL.EXE") | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
     if (-not $excel) { $excel = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\excel.exe' -ErrorAction SilentlyContinue).'(default)' }
-    if ($excel) { Ok "Excel: $excel" } else { Warn "Excel tidak ditemukan - BSP_v1.xlsm membutuhkan Microsoft Excel (Windows)" }
+    if ($excel) { Ok "Excel: $excel" } else { Ok "Excel tidak ada - tidak masalah: BSP.exe tidak membutuhkan Excel (hasil .xlsx bisa dibuka di WPS / LibreOffice)" }
     if (-not (Test-Path (Join-Path $engine 'BSP_engine.R'))) { Fail "Folder BSP_modular_engine tidak lengkap. Ekstrak ulang seluruh isi program." }
 
     # ---------------------------------------------------------------- 2. R
@@ -180,33 +181,45 @@ download.packages(deps, destdir = '$($offline -replace '\\','/')/packages-$mm', 
     # ---------------------------------------------------------------- 4. unblock
     Step 4 "Melepas blokir 'file dari internet' pada file program"
     $n = 0
-    $targets = @('BSP_v1.xlsm', 'Install_BSP.bat', 'BSP_modular_engine', 'setup', 'excel', 'tools', 'docs') |
+    $targets = @('BSP_v1.xlsm', 'Install_BSP.bat', 'BSP_modular_engine', 'setup', 'app', 'excel', 'tools', 'docs') |
                ForEach-Object { Join-Path $root $_ } | Where-Object { Test-Path $_ }
     Get-ChildItem $targets -Recurse -File | ForEach-Object {
         if (Get-Item $_.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue) { Unblock-File $_.FullName; $n++ }
     }
     Ok "$n file dilepas blokirnya (macro BSP_v1.xlsm tidak lagi diblokir Excel)"
 
-    # ---------------------------------------------------------------- 5. config + shortcut
-    Step 5 "Menyimpan pengaturan dan membuat shortcut"
+    # ---------------------------------------------------------------- 5. BSP.exe
+    Step 5 "Membuat aplikasi BSP.exe di komputer ini"
+    $bspExe = $null
+    try {
+        $bspExe = & (Join-Path $PSScriptRoot 'build_exe.ps1') -Quiet | Select-Object -Last 1
+        Ok "BSP.exe: $bspExe (tidak membutuhkan Excel)"
+    } catch {
+        Warn "BSP.exe tidak bisa dibuat ($($_.Exception.Message)) - program tetap bisa dipakai lewat BSP_v1.xlsm"
+        $bspExe = $null
+    }
+
+    # ---------------------------------------------------------------- 6. config + shortcut
+    Step 6 "Menyimpan pengaturan dan membuat shortcut"
     $cfg = Join-Path $root 'bsp_config.txt'
-    @("# Dibuat oleh Install_BSP.bat - dibaca BSP_v1.xlsm saat dibuka",
+    @("# Dibuat oleh Install_BSP.bat - dibaca BSP.exe dan BSP_v1.xlsm saat dibuka",
       "RSCRIPT_DIR=$(Split-Path -Parent $rscript)",
       "ENGINE_DIR=$engine",
       "R_VERSION=$($r.Version)",
       "INSTALLED=$(Get-Date -Format 'yyyy-MM-dd HH:mm')") | Set-Content -Path $cfg -Encoding ASCII
     Ok "Pengaturan: $cfg"
     $xlsm = Join-Path $root 'BSP_v1.xlsm'
-    if (-not $NoShortcut -and (Test-Path $xlsm)) {
+    $target = if ($bspExe -and (Test-Path $bspExe)) { $bspExe } elseif (Test-Path $xlsm) { $xlsm } else { $null }
+    if (-not $NoShortcut -and $target) {
         $lnk = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Bank Statement Parser.lnk'
         $sh = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
-        $sh.TargetPath = $xlsm; $sh.WorkingDirectory = $root; $sh.Description = 'Bank Statement Parser (BSP)'
+        $sh.TargetPath = $target; $sh.WorkingDirectory = $root; $sh.Description = 'Bank Statement Parser (BSP)'
         $sh.Save()
-        Ok "Shortcut desktop: $lnk"
+        Ok "Shortcut desktop: $lnk -> $(Split-Path -Leaf $target)"
     }
 
-    # ---------------------------------------------------------------- 6. self-check
-    Step 6 "Uji coba engine"
+    # ---------------------------------------------------------------- 7. self-check
+    Step 7 "Uji coba engine"
     $work = Join-Path $env:TEMP 'BSP_setup_check'
     New-Item -ItemType Directory -Force $work | Out-Null
     $done = Join-Path $work 'engine_done.txt'
@@ -222,8 +235,8 @@ download.packages(deps, destdir = '$($offline -replace '\\','/')/packages-$mm', 
     Write-Host ""
     Write-Host "============================================================" -ForegroundColor Green
     Write-Host "  INSTALASI SELESAI" -ForegroundColor Green
-    Write-Host "  Buka 'Bank Statement Parser' di desktop (atau BSP_v1.xlsm)," -ForegroundColor Green
-    Write-Host "  klik 'Enable Content' bila diminta, lalu 'Perbarui daftar bank'." -ForegroundColor Green
+    Write-Host "  Buka 'Bank Statement Parser' di desktop (BSP.exe)." -ForegroundColor Green
+    Write-Host "  Versi Excel (BSP_v1.xlsm) tetap tersedia di folder program." -ForegroundColor Green
     Write-Host "============================================================" -ForegroundColor Green
 }
 catch {
