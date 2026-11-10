@@ -16,6 +16,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using CheckBoxState = System.Windows.Forms.VisualStyles.CheckBoxState;
 
 [assembly: System.Reflection.AssemblyTitle("Bank Statement Parser")]
 [assembly: System.Reflection.AssemblyProduct("Bank Statement Parser (BSP)")]
@@ -384,11 +385,10 @@ namespace BSP
         Label lblFileCount, lblStatus, lblSummary, lblEmpty, lblBanks;
         ProgressBar progress;
         RichTextBox log;
-        FlatButton btnDetect, btnProcess, btnDownload, btnClear, btnRemove, btnBanks;
+        FlatButton btnDetect, btnProcess, btnDownload, btnClear, btnRemove, btnBanks, btnRemoveChecked;
         readonly List<Button> busyButtons = new List<Button>();
         readonly string sessionDir = Path.Combine(Path.GetTempPath(), "BSP_session_" + Process.GetCurrentProcess().Id);
         int runNo;
-        int countOk, countWarn, countErr;
         string lastInputFolder = "", lastDownloadFolder = "";
         public string LastMessage = "";
         public bool Silent;
@@ -578,7 +578,7 @@ namespace BSP
             var card = new CardPanel { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 5, 0) };
             gridResults = NewGrid();
             gridResults.ReadOnly = false;
-            gridResults.Columns.Add(new DataGridViewCheckBoxColumn { HeaderText = "", Width = 32 });
+            gridResults.Columns.Add(new DataGridViewCheckBoxColumn { HeaderText = "", Width = 34, ToolTipText = "Centang / hapus centang semua" });
             gridResults.Columns.Add(Col("File hasil", 260, true));
             gridResults.Columns.Add(Col("Dari", 200, true));
             gridResults.Columns.Add(Col("Jenis", 90, true));
@@ -596,17 +596,47 @@ namespace BSP
                 if (e.ColumnIndex == R_DOWNLOAD) DownloadSingle(e.RowIndex);
                 if (e.ColumnIndex == R_CHECK) gridResults.CommitEdit(DataGridViewDataErrorContexts.Commit);
             };
-            gridResults.CellDoubleClick += (s, e) => { if (e.RowIndex >= 0 && e.ColumnIndex != R_DOWNLOAD) DownloadSingle(e.RowIndex); };
+            gridResults.CellDoubleClick += (s, e) => { if (e.RowIndex >= 0 && e.ColumnIndex > R_CHECK && e.ColumnIndex != R_DOWNLOAD) DownloadSingle(e.RowIndex); };
+            // header checkbox: check / uncheck all results
+            gridResults.CellPainting += (s, e) =>
+            {
+                if (e.RowIndex != -1 || e.ColumnIndex != R_CHECK) return;
+                e.PaintBackground(e.CellBounds, false);
+                int n = gridResults.Rows.Count, on = CheckedRows().Count;
+                var state = n > 0 && on == n ? CheckBoxState.CheckedNormal : on > 0 ? CheckBoxState.MixedNormal : CheckBoxState.UncheckedNormal;
+                var size = CheckBoxRenderer.GetGlyphSize(e.Graphics, state);
+                CheckBoxRenderer.DrawCheckBox(e.Graphics, new Point(e.CellBounds.X + (e.CellBounds.Width - size.Width) / 2,
+                                                                    e.CellBounds.Y + (e.CellBounds.Height - size.Height) / 2), state);
+                e.Handled = true;
+            };
+            gridResults.ColumnHeaderMouseClick += (s, e) =>
+            {
+                if (e.ColumnIndex == R_CHECK && gridResults.Rows.Count > 0) SetAllChecked(CheckedRows().Count < gridResults.Rows.Count);
+            };
+            gridResults.CurrentCellDirtyStateChanged += (s, e) =>
+            {
+                if (gridResults.IsCurrentCellDirty && gridResults.CurrentCell != null && gridResults.CurrentCell.ColumnIndex == R_CHECK)
+                    gridResults.CommitEdit(DataGridViewDataErrorContexts.Commit);
+            };
+            gridResults.CellValueChanged += (s, e) =>
+            {
+                if (e.ColumnIndex != R_CHECK) return;
+                gridResults.InvalidateCell(R_CHECK, -1);
+                UpdateButtons();
+            };
             lblEmpty = new Label
             {
                 Text = "Belum ada file diproses. Hasil konversi akan muncul di sini.", AutoSize = false, Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleCenter, ForeColor = Theme.Muted, BackColor = Theme.Card
             };
             lblSummary = new Label { Text = "" };
+            btnRemoveChecked = new FlatButton("Hapus yang dicentang", "quiet");
+            btnRemoveChecked.Click += (s, e) => RemoveCheckedResults(true);
+            busyButtons.Add(btnRemoveChecked);
             card.Controls.Add(lblEmpty);
             card.Controls.Add(gridResults);
             card.Controls.Add(Separator());
-            card.Controls.Add(CardHeader("Hasil", lblSummary));
+            card.Controls.Add(CardHeader("Hasil", lblSummary, btnRemoveChecked));
             lblEmpty.BringToFront();
             return card;
         }
@@ -728,7 +758,9 @@ namespace BSP
             bool hasFiles = gridFiles.Rows.Count > 0;
             btnDetect.Enabled = hasFiles; btnProcess.Enabled = hasFiles; btnClear.Enabled = hasFiles;
             btnRemove.Enabled = gridFiles.SelectedRows.Count > 0;
-            btnDownload.Enabled = gridResults.Rows.Cast<DataGridViewRow>().Any(r => !string.IsNullOrEmpty(r.Tag as string));
+            var ticked = CheckedRows();
+            btnDownload.Enabled = ticked.Any(r => !string.IsNullOrEmpty(r.Tag as string));
+            btnRemoveChecked.Enabled = ticked.Count > 0;
             lblFileCount.Text = gridFiles.Rows.Count + " file";
             lblEmpty.Visible = gridResults.Rows.Count == 0;
         }
@@ -960,8 +992,7 @@ namespace BSP
                 AddResultRow(r, output, isRecap ? "Rekap mutasi" : isCons ? "Gabungan" : "Per file", status);
                 LogResult(r, details, cross, isCons || isRecap, true);
             }
-            countOk += ok; countWarn += warn; countErr += bad;
-            lblSummary.Text = string.Format("{0} OK  ·  {1} perlu dicek  ·  {2} gagal", countOk, countWarn, countErr);
+            UpdateSummary();
             SetBusy(false, string.Format("Selesai: {0} OK, {1} perlu dicek, {2} gagal. Centang hasil lalu klik 'Unduh yang Dicentang...'.", ok, warn, bad));
             LastMessage += lblStatus.Text + "\n";
         }
@@ -974,7 +1005,7 @@ namespace BSP
             bool hasFile = output != "" && File.Exists(output);
             row.Tag = hasFile ? output : null;
             row.Cells[R_CHECK].Value = hasFile;
-            row.Cells[R_CHECK].ReadOnly = !hasFile;
+            row.Cells[R_CHECK].ReadOnly = false;
             row.Cells[R_FILE].Value = hasFile ? Path.GetFileName(output) : "(tidak ada file)";
             string from = name;
             if (kind == "Gabungan" || kind == "Rekap mutasi")
@@ -1024,6 +1055,50 @@ namespace BSP
         {
             double d;
             return double.TryParse(v, NumberStyles.Any, CultureInfo.InvariantCulture, out d) ? d.ToString("#,##0.00", CultureInfo.InvariantCulture) : v;
+        }
+
+        // ------------------------------------------------------------ result selection
+        List<DataGridViewRow> CheckedRows()
+        {
+            return gridResults.Rows.Cast<DataGridViewRow>().Where(r => r.Cells[R_CHECK].Value is bool && (bool)r.Cells[R_CHECK].Value).ToList();
+        }
+
+        public void SetAllChecked(bool on)
+        {
+            gridResults.EndEdit();
+            foreach (DataGridViewRow r in gridResults.Rows) r.Cells[R_CHECK].Value = on;
+            gridResults.InvalidateCell(R_CHECK, -1);
+            UpdateButtons();
+        }
+
+        void UpdateSummary()
+        {
+            var st = gridResults.Rows.Cast<DataGridViewRow>().Select(r => (string)r.Cells[R_STATUS].Value ?? "").ToList();
+            lblSummary.Text = st.Count == 0 ? "" : string.Format("{0} OK  ·  {1} perlu dicek  ·  {2} gagal",
+                st.Count(x => x.StartsWith("\u2713")), st.Count(x => x.StartsWith("!")), st.Count(x => x.StartsWith("\u2715")));
+        }
+
+        // Removes ticked results from the list and deletes their temporary files
+        // (files already downloaded elsewhere are not touched)
+        public void RemoveCheckedResults(bool ask)
+        {
+            gridResults.EndEdit();
+            var rows = CheckedRows();
+            if (rows.Count == 0) return;
+            if (ask && !Silent && MessageBox.Show(this,
+                    "Hapus " + rows.Count + " hasil yang dicentang dari daftar?\n\nFile hasil sementaranya ikut dihapus. File yang sudah diunduh tidak terpengaruh.",
+                    "Bank Statement Parser", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            foreach (var r in rows)
+            {
+                string f = r.Tag as string;
+                try { if (!string.IsNullOrEmpty(f) && File.Exists(f)) File.Delete(f); } catch { }
+                gridResults.Rows.Remove(r);
+            }
+            Log(string.Format("[INFO] {0} hasil dihapus dari daftar.", rows.Count), Theme.Muted);
+            Status(rows.Count + " hasil dihapus dari daftar.");
+            UpdateSummary();
+            gridResults.InvalidateCell(R_CHECK, -1);
+            UpdateButtons();
         }
 
         // ------------------------------------------------------------ downloads
@@ -1115,6 +1190,19 @@ namespace BSP
                     sb.AppendLine("RESULT|" + r.Cells[R_FILE].Value + "|" + r.Cells[R_KIND].Value + "|" + r.Cells[R_STATUS].Value + "|" + r.Cells[R_CHECK].Value);
                 foreach (DataGridViewRow r in f.gridFiles.Rows)
                     sb.AppendLine("FILE|" + r.Cells[F_FILE].Value + "|" + r.Cells[F_STATUS].Value);
+                int total = f.gridResults.Rows.Count;
+                f.SetAllChecked(false);
+                sb.AppendLine("UNCHECK_ALL checked=" + f.CheckedRows().Count + " download=" + f.btnDownload.Enabled + " remove=" + f.btnRemoveChecked.Enabled);
+                f.SetAllChecked(true);
+                sb.AppendLine("CHECK_ALL checked=" + f.CheckedRows().Count + "/" + total + " download=" + f.btnDownload.Enabled + " remove=" + f.btnRemoveChecked.Enabled);
+                // remove only the first result, keep the rest ticked for the download
+                string firstFile = f.gridResults.Rows[0].Tag as string;
+                f.SetAllChecked(false);
+                f.gridResults.Rows[0].Cells[R_CHECK].Value = true;
+                f.RemoveCheckedResults(false);
+                sb.AppendLine("REMOVE_CHECKED rows=" + f.gridResults.Rows.Count + "/" + total + " temp file deleted=" + !File.Exists(firstFile) +
+                              " | " + f.lblSummary.Text);
+                f.SetAllChecked(true);
                 f.DownloadChecked(a[2]);
                 sb.AppendLine("DOWNLOADED|" + string.Join("|", Directory.GetFiles(a[2]).Select(Path.GetFileName)));
                 sb.AppendLine("LOG lines=" + f.log.Lines.Length);

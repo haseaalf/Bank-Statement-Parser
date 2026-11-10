@@ -39,8 +39,10 @@ jalankan `Install_BSP.bat` di sana.
    **Unduh yang Dicentang...** untuk menyimpan sekaligus ke folder pilihan.
 6. Baca **Log proses**: hijau berarti OK, oranye berarti perlu dicek, merah berarti gagal.
 
-Tombol **Hapus baris terpilih** dan **Hapus daftar** mengatur daftar file. **Perbarui daftar bank**
-menampilkan bank yang didukung.
+Tombol **Hapus baris terpilih** dan **Hapus daftar** mengatur daftar file. Di daftar **Hasil**,
+kotak centang di judul kolom mencentang atau menghapus centang semua hasil, dan **Hapus yang dicentang**
+membuang hasil yang dicentang dari daftar (file yang sudah diunduh tidak terpengaruh).
+**Perbarui daftar bank** menampilkan bank yang didukung.
 
 Semua file diproses di komputer ini dan tidak dikirim ke internet. Hasil sementara dihapus saat
 aplikasi ditutup, jadi unduh dulu hasil yang diperlukan.
