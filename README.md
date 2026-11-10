@@ -46,14 +46,27 @@ memakai compiler C# bawaan Windows (.NET Framework 4.x), jadi tidak ada tool yan
 Karena dibuat di PC itu sendiri, SmartScreen tidak menahannya sebagai file unduhan. Shortcut desktop
 diarahkan ke `BSP.exe`.
 
-- Fungsinya sama dengan `BSP_v1.xlsm`: pilih/tarik PDF, deteksi bank, opsi output, rekap mutasi,
-  PROSES/Verifikasi saja, serta tab Hasil, Verifikasi, dan Daftar Bank. Engine R yang dipakai juga sama.
+- Alurnya sederhana, seperti SLIK Parser:
+  1. Seret PDF ke kotak di atas, atau klik kotak itu untuk memilih file (bisa banyak bank dan rekening
+     sekaligus).
+  2. Opsional: klik **Deteksi Bank**. Jika status "Tidak dikenali" atau "Perlu password", isi kolom
+     **Bank** atau **Password** di daftar file.
+  3. Pilih **Mode output** (*Per file* / *Gabung per rekening*), **Toleransi saldo**, dan
+     **Buat rekap mutasi** (default menyala), lalu klik **Proses**.
+  4. Hasil muncul di daftar **Hasil**, semuanya tercentang. Klik **Unduh** per baris, atau
+     **Unduh yang Dicentang...** untuk menyimpan beberapa file sekaligus ke folder pilihan.
+     Detail verifikasi ditampilkan di **Log proses**.
+- Lokasi R dan engine dideteksi otomatis dari `bsp_config.txt` hasil `Install_BSP.bat`.
+- Nama file output memakai nama PDF (mode per file) atau `BANK_NoRek_Periode` (mode gabung).
+- Hasil disimpan sementara dan dihapus saat aplikasi ditutup, jadi unduh dulu yang diperlukan.
+- Di bagian bawah ada **Perbarui daftar bank** (menampilkan bank yang didukung) dan **Kontak Developer**.
+- Engine R yang dipakai sama dengan `BSP_v1.xlsm`.
 - Tidak membutuhkan Excel maupun WPS. File hasil tetap `.xlsx` dan bisa dibuka di Excel, WPS,
   LibreOffice, atau Google Sheets.
 - `BSP.exe` harus tetap berada di folder program (di samping `BSP_modular_engine`).
 - Pengaturan disimpan per user di `%APPDATA%\BSP\settings.ini`.
 - Untuk membangun ulang saja: `powershell -ExecutionPolicy Bypass -File setup\build_exe.ps1`.
-- Uji otomatis tanpa jendela:
+- Uji otomatis tanpa jendela (memproses lalu mengunduh semua hasil ke folder):
   `BSP.exe --selftest "<pdf1|pdf2>" "<folder output>" per_file|consolidated 0|1 "<laporan.txt>"`.
 - Bila kebijakan kantor (AppLocker/WDAC) melarang exe buatan sendiri, `BSP_v1.xlsm` tetap bisa dipakai.
 

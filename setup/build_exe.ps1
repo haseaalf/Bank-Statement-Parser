@@ -3,12 +3,12 @@
 # locally, so Windows SmartScreen does not treat it as a downloaded file.
 #
 # Called by Install_BSP.bat; can also be run on its own:  Build_BSP_exe.bat
-param([switch]$Quiet)
+param([switch]$Quiet, [string]$Out = '')
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $src  = Join-Path $root 'app\BSP.cs'
-$exe  = Join-Path $root 'BSP.exe'
+$exe  = if ($Out) { $Out } else { Join-Path $root 'BSP.exe' }
 
 $csc = @("$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe",
          "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\csc.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
@@ -19,6 +19,8 @@ $refs = 'System.dll', 'System.Core.dll', 'System.Drawing.dll', 'System.Windows.F
 $cargs = @('/nologo', '/target:winexe', '/optimize+', "/out:$exe") + ($refs | ForEach-Object { "/reference:$_" })
 $icon = Join-Path $root 'app\BSP.ico'
 if (Test-Path $icon) { $cargs += "/win32icon:$icon" }
+$logo = Join-Path $root 'app' | Join-Path -ChildPath 'logo.png'
+if (Test-Path $logo) { $cargs += "/resource:$logo,BSP.logo.png" }
 $cargs += $src
 
 $out = & $csc @cargs 2>&1

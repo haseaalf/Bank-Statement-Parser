@@ -1,13 +1,15 @@
 // Bank Statement Parser (BSP) - standalone Windows application.
 //
-// Same workflow as BSP_v1.xlsm, without Excel/WPS: the window writes the job files,
-// runs the R engine (BSP_modular_engine\BSP_engine.R) and shows the results.
+// Simple flow (like SLIK Parser): drop PDFs -> (optional) detect bank -> Proses -> tick results
+// -> Unduh. No Excel/WPS needed: the window writes the job files, runs the R engine
+// (BSP_modular_engine\BSP_engine.R) into a temporary folder and lets the user download the results.
 // Built on the target PC by setup\build_exe.ps1 with the C# compiler that ships with
 // Windows (.NET Framework 4.x, C# 5) - keep the code C# 5 compatible.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -213,238 +215,462 @@ namespace BSP
         }
     }
 
+    // ---------------------------------------------------------------- look & feel (palette of the BSP icon)
+    static class Theme
+    {
+        public static readonly Color Navy = ColorTranslator.FromHtml("#04225A");      // titles, text on light
+        public static readonly Color Blue = ColorTranslator.FromHtml("#0146B3");      // main action, strip
+        public static readonly Color BlueDark = ColorTranslator.FromHtml("#01368C");  // hover
+        public static readonly Color Accent = ColorTranslator.FromHtml("#429BFD");    // highlight
+        public static readonly Color Tint = ColorTranslator.FromHtml("#EAF2FE");      // hover / secondary buttons
+        public static readonly Color TintHover = ColorTranslator.FromHtml("#D6E6FD");
+        public static readonly Color Line = ColorTranslator.FromHtml("#B8C9DE");      // borders
+        public static readonly Color Bg = ColorTranslator.FromHtml("#F3F6FA");        // window
+        public static readonly Color Card = Color.White;
+        public static readonly Color Ink = ColorTranslator.FromHtml("#1F2A3C");
+        public static readonly Color Muted = ColorTranslator.FromHtml("#5B677A");
+        public static readonly Color Ok = ColorTranslator.FromHtml("#1E7B34");
+        public static readonly Color Warn = ColorTranslator.FromHtml("#9A5B00");
+        public static readonly Color Err = ColorTranslator.FromHtml("#B3261E");
+        public const string Font = "Segoe UI";
+
+        public static GraphicsPath Rounded(Rectangle r, int radius)
+        {
+            var p = new GraphicsPath();
+            int d = radius * 2;
+            p.AddArc(r.X, r.Y, d, d, 180, 90);
+            p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+            p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+            p.CloseFigure();
+            return p;
+        }
+    }
+
+    // Flat colored button with hover and a clear disabled look
+    class FlatButton : Button
+    {
+        readonly Color bg, fg, hover, disBg, disFg;
+
+        public FlatButton(string text, string kind)
+        {
+            Text = text;
+            FlatStyle = FlatStyle.Flat;
+            FlatAppearance.BorderSize = 0;
+            Cursor = Cursors.Hand;
+            AutoSize = true;
+            Padding = new Padding(12, 4, 12, 4);
+            Font = new Font(Theme.Font, 9.5F, FontStyle.Bold);
+            if (kind == "primary") { bg = Theme.Blue; fg = Color.White; hover = Theme.BlueDark; disBg = ColorTranslator.FromHtml("#AFC4E6"); disFg = Color.White; }
+            else if (kind == "secondary") { bg = Theme.Tint; fg = Theme.Blue; hover = Theme.TintHover; disBg = ColorTranslator.FromHtml("#F0F2F5"); disFg = ColorTranslator.FromHtml("#9AA3B0"); }
+            else { bg = Theme.Bg; fg = Theme.Muted; hover = ColorTranslator.FromHtml("#E3E8EF"); disBg = Theme.Bg; disFg = ColorTranslator.FromHtml("#A5ADB8"); Font = new Font(Theme.Font, 9F); }
+            FlatAppearance.MouseOverBackColor = hover;
+            FlatAppearance.MouseDownBackColor = hover;
+            Apply();
+            EnabledChanged += (s, e) => Apply();
+        }
+
+        void Apply()
+        {
+            BackColor = Enabled ? bg : disBg;
+            ForeColor = Enabled ? fg : disFg;
+            Cursor = Enabled ? Cursors.Hand : Cursors.Default;
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            if (Enabled) { base.OnPaint(e); return; }
+            // WinForms paints disabled flat buttons grey on grey; draw our own disabled look
+            e.Graphics.Clear(disBg);
+            TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, disFg,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        }
+    }
+
+    // White card with a thin border
+    class CardPanel : Panel
+    {
+        public CardPanel() { BackColor = Theme.Card; DoubleBuffered = true; Padding = new Padding(1); }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            using (var pen = new Pen(Theme.Line)) e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
+        }
+    }
+
+    // Drop area: drag PDFs onto it, or click it to choose files
+    class DropZone : Panel
+    {
+        public event Action<string[]> FilesChosen;
+        public event Action BrowseRequested;
+        bool active;
+        public bool Busy;
+
+        public DropZone()
+        {
+            DoubleBuffered = true;
+            BackColor = Theme.Card;
+            Cursor = Cursors.Hand;
+            AllowDrop = true;
+            MouseEnter += (s, e) => SetActive(true);
+            MouseLeave += (s, e) => SetActive(false);
+            Click += (s, e) => { if (!Busy && BrowseRequested != null) BrowseRequested(); };
+            DragEnter += (s, e) =>
+            {
+                if (!Busy && e.Data.GetDataPresent(DataFormats.FileDrop)) { e.Effect = DragDropEffects.Copy; SetActive(true); }
+            };
+            DragLeave += (s, e) => SetActive(false);
+            DragDrop += (s, e) =>
+            {
+                SetActive(false);
+                var files = e.Data.GetData(DataFormats.FileDrop) as string[];
+                if (files != null && FilesChosen != null) FilesChosen(files);
+            };
+            Resize += (s, e) => Invalidate();
+        }
+
+        void SetActive(bool a) { active = a; Invalidate(); }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            bool on = active && !Busy;
+            g.Clear(on ? Theme.Tint : Theme.Card);
+            var r = new Rectangle(6, 6, Width - 13, Height - 13);
+            using (var pen = new Pen(on ? Theme.Blue : Theme.Line, 2) { DashPattern = new float[] { 4, 3 } })
+            using (var path = Theme.Rounded(r, 8))
+                g.DrawPath(pen, path);
+            int cx = Width / 2, cy = Height / 2;
+            var center = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+            if (Busy)
+            {
+                using (var f1 = new Font(Theme.Font, 13F, FontStyle.Bold)) using (var b = new SolidBrush(Theme.Navy))
+                    g.DrawString("Sedang memproses...", f1, b, cx, cy - 10, center);
+                using (var f2 = new Font(Theme.Font, 9.5F)) using (var b = new SolidBrush(Theme.Muted))
+                    g.DrawString("Mohon tunggu hingga semua file selesai.", f2, b, cx, cy + 16, center);
+                return;
+            }
+            using (var f1 = new Font(Theme.Font, 13F, FontStyle.Bold)) using (var b = new SolidBrush(Theme.Navy))
+                g.DrawString("Seret & lepas file PDF rekening koran di sini", f1, b, cx, cy - 26, center);
+            using (var f2 = new Font(Theme.Font, 9.5F)) using (var b = new SolidBrush(Theme.Muted))
+                g.DrawString("bisa banyak file, banyak bank, dan banyak rekening sekaligus", f2, b, cx, cy - 4, center);
+            var btn = new Rectangle(cx - 75, cy + 11, 150, 28);
+            using (var path = Theme.Rounded(btn, 6)) using (var b = new SolidBrush(on ? Theme.BlueDark : Theme.Blue))
+                g.FillPath(b, path);
+            using (var f3 = new Font(Theme.Font, 9.5F, FontStyle.Bold))
+                g.DrawString("Pilih File PDF", f3, Brushes.White, cx, cy + 25, center);
+        }
+    }
+
     // ---------------------------------------------------------------- main window
     class MainForm : Form
     {
-        const string LocChosen = "Folder pilihan";
-        const string LocPdf = "Sama dengan folder PDF";
+        const string DeveloperEmail = "haseaalfian6@gmail.com";
         const string ModePerFile = "Per file (1 PDF = 1 Excel)";
         const string ModeCons = "Gabung per rekening";
-        const string ExistSuffix = "Beri akhiran (2) (3) dst";
-        const string ExistOverwrite = "Timpa file lama";
-        const string NameOriginal = "Sama dengan nama PDF";
-        const string NameStandard = "Standar (BANK_NoRek_Periode)";
 
-        static readonly Color Blue = Color.FromArgb(31, 78, 121);
-        static readonly Color Green = Color.FromArgb(198, 239, 206);
-        static readonly Color Yellow = Color.FromArgb(255, 235, 156);
-        static readonly Color Red = Color.FromArgb(255, 199, 206);
+        // file list columns
+        const int F_NO = 0, F_FILE = 1, F_BANK = 2, F_PWD = 3, F_DET = 4, F_SCORE = 5, F_ACC = 6, F_NAME = 7, F_PERIOD = 8, F_STATUS = 9, F_PATH = 10;
+        // result list columns
+        const int R_CHECK = 0, R_FILE = 1, R_FROM = 2, R_KIND = 3, R_STATUS = 4, R_DOWNLOAD = 5;
 
-        TextBox txtR, txtEngine, txtOut;
-        ComboBox cboLoc, cboMode, cboExist, cboName;
+        DropZone drop;
+        DataGridView gridFiles, gridResults;
+        DataGridViewComboBoxColumn colBank;
+        ComboBox cboMode;
         NumericUpDown numTol;
-        CheckBox chkOpen, chkRecap;
-        Label lblInfo;
-        ToolStripStatusLabel statusText;
+        CheckBox chkRecap;
+        Label lblFileCount, lblStatus, lblSummary, lblEmpty, lblBanks;
         ProgressBar progress;
-        DataGridView gridFiles, gridResult, gridVerify, gridBanks;
-        DataGridViewComboBoxColumn colBank, colFormat;
-        TabControl tabs;
-        TabPage tabResult, tabVerify;
-        List<Button> actionButtons = new List<Button>();
-        string lastInputFolder = "";
+        RichTextBox log;
+        FlatButton btnDetect, btnProcess, btnDownload, btnClear, btnRemove, btnBanks;
+        readonly List<Button> busyButtons = new List<Button>();
+        readonly string sessionDir = Path.Combine(Path.GetTempPath(), "BSP_session_" + Process.GetCurrentProcess().Id);
+        int runNo;
+        int countOk, countWarn, countErr;
+        string lastInputFolder = "", lastDownloadFolder = "";
         public string LastMessage = "";
         public bool Silent;
 
         public MainForm()
         {
-            Text = "Bank Statement Parser (BSP)";
-            Font = new Font("Segoe UI", 9F);
-            Width = 1250; Height = 780;
-            MinimumSize = new Size(980, 600);
+            Text = "Bank Statement Parser";
+            Font = new Font(Theme.Font, 9F);
+            BackColor = Theme.Bg;
+            var wa = Screen.PrimaryScreen.WorkingArea;
+            Size = new Size(Math.Min(1180, wa.Width - 40), Math.Min(940, wa.Height - 40));
+            MinimumSize = new Size(Math.Min(900, Width), Math.Min(700, Height));
             StartPosition = FormStartPosition.CenterScreen;
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
-            tabs = new TabControl { Dock = DockStyle.Fill };
-            var tabMain = new TabPage("Proses");
-            tabResult = new TabPage("Hasil");
-            tabVerify = new TabPage("Verifikasi");
-            var tabBanks = new TabPage("Daftar Bank");
-            tabs.TabPages.AddRange(new[] { tabMain, tabResult, tabVerify, tabBanks });
+            var body = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(16, 12, 16, 0), BackColor = Theme.Bg };
+            body.RowStyles.Add(new RowStyle(SizeType.Absolute, 104));   // drop zone
+            body.RowStyles.Add(new RowStyle(SizeType.Percent, 42));     // file list
+            body.RowStyles.Add(new RowStyle(SizeType.AutoSize));        // options + actions
+            body.RowStyles.Add(new RowStyle(SizeType.AutoSize));        // status + download
+            body.RowStyles.Add(new RowStyle(SizeType.Percent, 58));     // results | log (side by side)
 
-            var status = new StatusStrip();
-            statusText = new ToolStripStatusLabel("Siap") { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
-            status.Items.Add(statusText);
-            progress = new ProgressBar { Style = ProgressBarStyle.Marquee, Visible = false, Width = 200, Dock = DockStyle.Right };
+            drop = new DropZone { Dock = DockStyle.Fill, Margin = new Padding(0) };
+            drop.BrowseRequested += SelectFiles;
+            drop.FilesChosen += AddFiles;
+            body.Controls.Add(drop, 0, 0);
+            body.Controls.Add(BuildFileCard(), 0, 1);
+            body.Controls.Add(BuildActionRow(), 0, 2);
+            body.Controls.Add(BuildStatusRow(), 0, 3);
+            var split = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = new Padding(0, 8, 0, 8), BackColor = Theme.Bg };
+            split.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
+            split.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
+            split.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            split.Controls.Add(BuildResultCard(), 0, 0);
+            split.Controls.Add(BuildLogCard(), 1, 0);
+            body.Controls.Add(split, 0, 4);
 
-            BuildMainTab(tabMain);
-            gridResult = NewGrid(true);
-            gridResult.CellDoubleClick += (s, e) => OpenResultFile(e.RowIndex);
-            tabResult.Controls.Add(gridResult);
-            tabResult.Controls.Add(ResultButtons());
-            gridVerify = NewGrid(true);
-            tabVerify.Controls.Add(gridVerify);
-            gridBanks = NewGrid(true);
-            tabBanks.Controls.Add(gridBanks);
-
-            var bottom = new Panel { Dock = DockStyle.Bottom, Height = 24 };
-            bottom.Controls.Add(progress);
-            Controls.Add(tabs);
-            Controls.Add(bottom);
-            Controls.Add(status);
+            Controls.Add(body);
+            Controls.Add(BuildFooter());
+            Controls.Add(new Panel { Dock = DockStyle.Top, Height = 4, BackColor = Theme.Blue });
+            Controls.Add(BuildHeader());
 
             LoadSettings();
             FormClosing += (s, e) => SaveSettings();
-            // TabControl creates the controls of a page only when it is first shown; filling a grid on a
-            // page that was never shown and showing it later fails ("Error creating window handle").
-            // Visit every page once while the window opens so all grids exist before data arrives.
-            Load += (s, e) =>
-            {
-                for (int i = tabs.TabPages.Count - 1; i >= 0; i--) tabs.SelectedIndex = i;
-            };
-            Shown += async (s, e) => { if (Engine.RscriptIn(txtR.Text) != "" && gridBanks.Rows.Count == 0) await RefreshBanksAsync(false); };
+            FormClosed += (s, e) => { try { if (Directory.Exists(sessionDir)) Directory.Delete(sessionDir, true); } catch { } };
+            Shown += async (s, e) => { if (Rscript != "" && colBank.Items.Count <= 1) await RefreshBanksAsync(false); };
+            UpdateButtons();
         }
 
-        // ------------------------------------------------------------ layout
-        void BuildMainTab(TabPage page)
+        // ------------------------------------------------------------ layout pieces
+        Control BuildHeader()
         {
-            var settings = new TableLayoutPanel { Dock = DockStyle.Top, Height = 250, ColumnCount = 4, Padding = new Padding(8) };
-            settings.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 230));
-            settings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            settings.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
-            settings.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 360));
-
-            txtR = new TextBox { Dock = DockStyle.Fill };
-            txtEngine = new TextBox { Dock = DockStyle.Fill };
-            txtOut = new TextBox { Dock = DockStyle.Fill };
-            cboLoc = Combo(LocChosen, LocPdf);
-            cboMode = Combo(ModePerFile, ModeCons);
-            cboExist = Combo(ExistSuffix, ExistOverwrite);
-            cboName = Combo(NameOriginal, NameStandard);
-            numTol = new NumericUpDown { DecimalPlaces = 2, Increment = 0.01M, Minimum = 0, Maximum = 1000, Value = 0.01M, Width = 90 };
-            chkOpen = new CheckBox { Text = "Buka folder output setelah selesai", Checked = true, AutoSize = true };
-            chkRecap = new CheckBox { Text = "Buat rekap mutasi (semua file: sheet REKAP + 1 sheet per rekening, cek saldo bulanan)", AutoSize = true };
-            lblInfo = new Label { AutoSize = true, ForeColor = Color.Gray };
-
-            int r = 0;
-            AddRow(settings, r++, "Folder R (berisi Rscript.exe)", txtR, BrowseButton(txtR, "Pilih folder R (berisi Rscript.exe)"), null);
-            AddRow(settings, r++, "Folder engine R", txtEngine, BrowseButton(txtEngine, "Pilih folder BSP_modular_engine"), lblInfo);
-            AddRow(settings, r++, "Folder tujuan output", txtOut, BrowseButton(txtOut, "Pilih folder tujuan output"), null);
-            AddRow(settings, r++, "Lokasi penyimpanan", cboLoc, null, null);
-            AddRow(settings, r++, "Mode output", cboMode, null, null);
-            AddRow(settings, r++, "Jika file output sudah ada", cboExist, null, null);
-            AddRow(settings, r++, "Nama file output", cboName, null,
-                   new Label { Text = "Mode gabung selalu memakai nama standar", AutoSize = true, ForeColor = Color.Gray });
-            AddRow(settings, r++, "Toleransi selisih saldo", numTol, null, chkOpen);
-            settings.Controls.Add(chkRecap, 1, r);
-            settings.SetColumnSpan(chkRecap, 3);
-            settings.RowCount = r + 1;
-
-            var buttons = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 44, Padding = new Padding(8, 6, 8, 0) };
-            buttons.Controls.Add(ActionButton("Pilih File PDF...", (s, e) => SelectFiles()));
-            buttons.Controls.Add(ActionButton("Deteksi Bank", async (s, e) => await DetectAsync()));
-            var go = ActionButton("PROSES", async (s, e) => await ProcessAsync(false));
-            go.Font = new Font(Font, FontStyle.Bold); go.BackColor = Color.FromArgb(198, 239, 206);
-            buttons.Controls.Add(go);
-            buttons.Controls.Add(ActionButton("Verifikasi saja", async (s, e) => await ProcessAsync(true)));
-            buttons.Controls.Add(ActionButton("Hapus daftar", (s, e) => ClearFiles(true)));
-            buttons.Controls.Add(ActionButton("Hapus baris terpilih", (s, e) => RemoveSelected()));
-            buttons.Controls.Add(ActionButton("Perbarui daftar bank", async (s, e) => await RefreshBanksAsync(true)));
-
-            var hint = new Label
+            var header = new Panel { Dock = DockStyle.Top, Height = 78, BackColor = Theme.Card, Padding = new Padding(16, 8, 16, 8) };
+            var logo = new PictureBox { Dock = DockStyle.Left, Width = 62, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Theme.Card };
+            try
             {
-                Dock = DockStyle.Top, Height = 22, Padding = new Padding(10, 4, 0, 0), ForeColor = Color.Gray,
-                Text = "Tarik file PDF ke tabel, atau klik 'Pilih File PDF...'. Kolom Bank: AUTO = deteksi otomatis, atau pilih bank. Isi Password bila PDF terkunci."
+                var s = typeof(MainForm).Assembly.GetManifestResourceStream("BSP.logo.png");
+                if (s != null) logo.Image = Image.FromStream(s);
+            }
+            catch { }
+            var texts = new Panel { Dock = DockStyle.Fill, Padding = new Padding(14, 6, 0, 0), BackColor = Theme.Card };
+            var sub = new Label
+            {
+                Dock = DockStyle.Top, Height = 24, ForeColor = Theme.Muted, Font = new Font(Theme.Font, 9.5F),
+                Text = "Ubah PDF rekening koran berbagai bank menjadi Excel standar, lengkap dengan verifikasi saldo dan rekap mutasi bulanan."
             };
+            var title = new Label { Dock = DockStyle.Top, Height = 30, ForeColor = Theme.Navy, Font = new Font(Theme.Font, 15F, FontStyle.Bold), Text = "Konversi Rekening Koran ke Excel" };
+            texts.Controls.Add(sub);
+            texts.Controls.Add(title);
+            header.Controls.Add(texts);
+            header.Controls.Add(logo);
+            return header;
+        }
 
-            gridFiles = NewGrid(false);
-            gridFiles.AllowUserToAddRows = false;
-            gridFiles.AllowDrop = true;
-            gridFiles.DragEnter += (s, e) => { if (e.Data.GetDataPresent(DataFormats.FileDrop)) e.Effect = DragDropEffects.Copy; };
-            gridFiles.DragDrop += (s, e) => AddFiles((string[])e.Data.GetData(DataFormats.FileDrop));
+        Control CardHeader(string title, Label right, params Control[] buttons)
+        {
+            var head = new Panel { Dock = DockStyle.Top, Height = 34, BackColor = Theme.Card, Padding = new Padding(12, 4, 8, 3) };
+            var flow = new FlowLayoutPanel { Dock = DockStyle.Right, AutoSize = true, WrapContents = false, BackColor = Theme.Card };
+            foreach (var b in buttons) { b.Margin = new Padding(6, 0, 0, 0); flow.Controls.Add(b); }
+            if (right != null) { right.AutoSize = true; right.ForeColor = Theme.Muted; right.Margin = new Padding(8, 6, 4, 0); flow.Controls.Add(right); flow.Controls.SetChildIndex(right, 0); }
+            head.Controls.Add(new Label { Text = title, Dock = DockStyle.Left, AutoSize = true, ForeColor = Theme.Navy, Font = new Font(Theme.Font, 10.5F, FontStyle.Bold), Padding = new Padding(0, 4, 0, 0) });
+            head.Controls.Add(flow);
+            return head;
+        }
+
+        Control Separator() { return new Panel { Dock = DockStyle.Top, Height = 1, BackColor = Theme.Line }; }
+
+        Control BuildFileCard()
+        {
+            var card = new CardPanel { Dock = DockStyle.Fill, Margin = new Padding(0, 10, 0, 0) };
+            gridFiles = NewGrid();
+            gridFiles.ReadOnly = false;
+            gridFiles.EditMode = DataGridViewEditMode.EditOnEnter;
             gridFiles.DataError += (s, e) => { e.ThrowException = false; };
-            gridFiles.Columns.Add(TextCol("No", 40, true));
-            gridFiles.Columns.Add(TextCol("File PDF", 360, true));
-            colBank = new DataGridViewComboBoxColumn { HeaderText = "Bank", Width = 120, FlatStyle = FlatStyle.Flat };
+            gridFiles.Columns.Add(Col("No", 38, true));
+            gridFiles.Columns.Add(Col("File PDF", 260, true));
+            colBank = new DataGridViewComboBoxColumn { HeaderText = "Bank", Width = 115, FlatStyle = FlatStyle.Flat, DisplayStyle = DataGridViewComboBoxDisplayStyle.ComboBox };
             colBank.Items.Add("AUTO");
             gridFiles.Columns.Add(colBank);
-            colFormat = new DataGridViewComboBoxColumn { HeaderText = "Format (opsional)", Width = 170, FlatStyle = FlatStyle.Flat };
-            colFormat.Items.Add("");
-            gridFiles.Columns.Add(colFormat);
-            gridFiles.Columns.Add(TextCol("Password", 90, false));
-            foreach (string h in new[] { "Bank terdeteksi", "Skor", "No. Rekening", "Nama Rekening", "Periode", "Status", "Pesan" })
-                gridFiles.Columns.Add(TextCol(h, h == "Skor" ? 50 : (h == "Pesan" ? 260 : 140), true));
-
-            page.Controls.Add(gridFiles);
-            page.Controls.Add(hint);
-            page.Controls.Add(buttons);
-            page.Controls.Add(settings);
-        }
-
-        static void AddRow(TableLayoutPanel t, int row, string label, Control input, Control button, Control extra)
-        {
-            t.Controls.Add(new Label { Text = label, AutoSize = true, Anchor = AnchorStyles.Left }, 0, row);
-            t.Controls.Add(input, 1, row);
-            if (button != null) t.Controls.Add(button, 2, row);
-            if (extra != null) { extra.Anchor = AnchorStyles.Left; t.Controls.Add(extra, 3, row); }
-        }
-
-        static ComboBox Combo(params string[] items)
-        {
-            var c = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260 };
-            c.Items.AddRange(items);
-            c.SelectedIndex = 0;
-            return c;
-        }
-
-        Button BrowseButton(TextBox target, string title)
-        {
-            var b = new Button { Text = "Browse...", Width = 80 };
-            b.Click += (s, e) =>
+            gridFiles.Columns.Add(Col("Password", 85, false));
+            gridFiles.Columns.Add(Col("Bank terdeteksi", 190, true));
+            gridFiles.Columns.Add(Col("Skor", 45, true));
+            gridFiles.Columns.Add(Col("No. Rekening", 125, true));
+            gridFiles.Columns.Add(Col("Nama Rekening", 190, true));
+            gridFiles.Columns.Add(Col("Periode", 160, true));
+            gridFiles.Columns.Add(Col("Status", 150, true));
+            gridFiles.Columns.Add(Col("Path", 10, true));
+            gridFiles.Columns[F_PATH].Visible = false;
+            gridFiles.Columns[F_BANK].ToolTipText = "AUTO = deteksi otomatis. Pilih bank bila 'Tidak dikenali' atau 'Ragu'.";
+            gridFiles.Columns[F_PWD].ToolTipText = "Isi bila PDF dikunci password.";
+            gridFiles.CellFormatting += (s, e) =>
             {
-                using (var d = new FolderBrowserDialog { Description = title, SelectedPath = Directory.Exists(target.Text) ? target.Text : "" })
-                {
-                    if (d.ShowDialog(this) == DialogResult.OK)
-                    {
-                        target.Text = d.SelectedPath;
-                        if (target == txtOut) cboLoc.SelectedItem = LocChosen;
-                    }
-                }
+                if (e.RowIndex >= 0 && e.ColumnIndex == F_PWD && e.Value != null && (string)e.Value != "")
+                { e.Value = new string('*', ((string)e.Value).Length); e.FormattingApplied = true; }
             };
-            return b;
+            gridFiles.SelectionChanged += (s, e) => UpdateButtons();
+
+            lblFileCount = new Label { Text = "0 file" };
+            btnRemove = new FlatButton("Hapus baris terpilih", "quiet");
+            btnRemove.Click += (s, e) => RemoveSelected();
+            btnClear = new FlatButton("Hapus daftar", "quiet");
+            btnClear.Click += (s, e) => ClearFiles(true);
+            busyButtons.Add(btnRemove); busyButtons.Add(btnClear);
+
+            card.Controls.Add(gridFiles);
+            card.Controls.Add(Separator());
+            card.Controls.Add(CardHeader("Daftar file", lblFileCount, btnRemove, btnClear));
+            return card;
         }
 
-        Button ActionButton(string text, EventHandler click)
+        Control BuildActionRow()
         {
-            var b = new Button { Text = text, AutoSize = true, Height = 30, Padding = new Padding(6, 0, 6, 0) };
-            b.Click += click;
-            actionButtons.Add(b);
-            return b;
+            var row = new Panel { Dock = DockStyle.Fill, Height = 46, Margin = new Padding(0, 10, 0, 0), BackColor = Theme.Bg };
+            var left = new FlowLayoutPanel { Dock = DockStyle.Left, AutoSize = true, WrapContents = false, BackColor = Theme.Bg, Padding = new Padding(0, 6, 0, 0) };
+            cboMode = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, Margin = new Padding(4, 2, 18, 0) };
+            cboMode.Items.AddRange(new object[] { ModePerFile, ModeCons });
+            cboMode.SelectedIndex = 0;
+            numTol = new NumericUpDown { DecimalPlaces = 2, Increment = 0.01M, Minimum = 0, Maximum = 1000, Value = 0.01M, Width = 70, Margin = new Padding(4, 2, 18, 0) };
+            chkRecap = new CheckBox { Text = "Buat rekap mutasi", Checked = true, AutoSize = true, ForeColor = Theme.Ink, Margin = new Padding(0, 4, 0, 0) };
+            var tip = new ToolTip();
+            tip.SetToolTip(cboMode, "Per file: 1 PDF menjadi 1 Excel. Gabung per rekening: semua bulan satu rekening menjadi 1 Excel.");
+            tip.SetToolTip(numTol, "Selisih saldo yang masih dianggap cocok saat verifikasi.");
+            tip.SetToolTip(chkRecap, "Tambahan 1 file rekap: sheet REKAP + 1 sheet per rekening, dengan cek saldo bulanan.");
+            left.Controls.Add(Caption("Mode output"));
+            left.Controls.Add(cboMode);
+            left.Controls.Add(Caption("Toleransi saldo"));
+            left.Controls.Add(numTol);
+            left.Controls.Add(chkRecap);
+
+            var right = new FlowLayoutPanel { Dock = DockStyle.Right, AutoSize = true, WrapContents = false, BackColor = Theme.Bg, Padding = new Padding(0, 2, 0, 0) };
+            btnDetect = new FlatButton("Deteksi Bank", "secondary") { Height = 36 };
+            btnDetect.Click += async (s, e) => await DetectAsync();
+            btnProcess = new FlatButton("Proses", "primary") { Height = 36, Margin = new Padding(8, 0, 0, 0), Padding = new Padding(26, 4, 26, 4) };
+            btnProcess.Font = new Font(Theme.Font, 10.5F, FontStyle.Bold);
+            btnProcess.Click += async (s, e) => await ProcessAsync();
+            busyButtons.Add(btnDetect); busyButtons.Add(btnProcess);
+            right.Controls.Add(btnDetect);
+            right.Controls.Add(btnProcess);
+
+            row.Controls.Add(left);
+            row.Controls.Add(right);
+            return row;
         }
 
-        Panel ResultButtons()
+        static Label Caption(string text)
         {
-            var p = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 40, Padding = new Padding(6) };
-            var open = new Button { Text = "Buka file terpilih", AutoSize = true };
-            open.Click += (s, e) => { if (gridResult.CurrentRow != null) OpenResultFile(gridResult.CurrentRow.Index); };
-            var folder = new Button { Text = "Buka folder output", AutoSize = true };
-            folder.Click += (s, e) => OpenOutputFolder();
-            var log = new Button { Text = "Buka log engine", AutoSize = true };
-            log.Click += (s, e) => OpenPath(Path.Combine(Engine.WorkDir, "engine_log.txt"));
-            p.Controls.AddRange(new Control[] { open, folder, log,
-                new Label { Text = "Double-click baris untuk membuka file output.", AutoSize = true, ForeColor = Color.Gray, Padding = new Padding(0, 6, 0, 0) } });
-            return p;
+            return new Label { Text = text, AutoSize = true, ForeColor = Theme.Ink, Margin = new Padding(0, 6, 0, 0) };
         }
 
-        static DataGridView NewGrid(bool readOnly)
+        Control BuildStatusRow()
+        {
+            var row = new Panel { Dock = DockStyle.Fill, Height = 44, Margin = new Padding(0, 8, 0, 0), BackColor = Theme.Bg };
+            btnDownload = new FlatButton("Unduh yang Dicentang...", "primary") { Dock = DockStyle.Right, AutoSize = false, Width = 200 };
+            btnDownload.Click += (s, e) => DownloadChecked(null);
+            var left = new Panel { Dock = DockStyle.Fill, Padding = new Padding(0, 2, 16, 0), BackColor = Theme.Bg };
+            lblStatus = new Label { Dock = DockStyle.Top, Height = 20, ForeColor = Theme.Ink, Text = "Menunggu file. Seret PDF ke kotak di atas atau klik untuk memilih." };
+            progress = new ProgressBar { Dock = DockStyle.Top, Height = 8, Style = ProgressBarStyle.Continuous, Value = 0 };
+            left.Controls.Add(progress);
+            left.Controls.Add(lblStatus);
+            row.Controls.Add(left);
+            row.Controls.Add(btnDownload);
+            return row;
+        }
+
+        Control BuildResultCard()
+        {
+            var card = new CardPanel { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 5, 0) };
+            gridResults = NewGrid();
+            gridResults.ReadOnly = false;
+            gridResults.Columns.Add(new DataGridViewCheckBoxColumn { HeaderText = "", Width = 32 });
+            gridResults.Columns.Add(Col("File hasil", 260, true));
+            gridResults.Columns.Add(Col("Dari", 200, true));
+            gridResults.Columns.Add(Col("Jenis", 90, true));
+            gridResults.Columns.Add(Col("Status", 105, true));
+            gridResults.Columns.Add(new DataGridViewButtonColumn { HeaderText = "", Width = 72, FlatStyle = FlatStyle.Flat });
+            gridResults.Columns[R_DOWNLOAD].DefaultCellStyle.BackColor = Theme.Tint;
+            gridResults.Columns[R_DOWNLOAD].DefaultCellStyle.ForeColor = Theme.Blue;
+            gridResults.Columns[R_DOWNLOAD].DefaultCellStyle.SelectionBackColor = Theme.TintHover;
+            gridResults.Columns[R_DOWNLOAD].DefaultCellStyle.SelectionForeColor = Theme.Blue;
+            gridResults.Columns[R_DOWNLOAD].DefaultCellStyle.Font = new Font(Theme.Font, 9F, FontStyle.Bold);
+            gridResults.Columns[R_FILE].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
+            gridResults.CellContentClick += (s, e) =>
+            {
+                if (e.RowIndex < 0) return;
+                if (e.ColumnIndex == R_DOWNLOAD) DownloadSingle(e.RowIndex);
+                if (e.ColumnIndex == R_CHECK) gridResults.CommitEdit(DataGridViewDataErrorContexts.Commit);
+            };
+            gridResults.CellDoubleClick += (s, e) => { if (e.RowIndex >= 0 && e.ColumnIndex != R_DOWNLOAD) DownloadSingle(e.RowIndex); };
+            lblEmpty = new Label
+            {
+                Text = "Belum ada file diproses. Hasil konversi akan muncul di sini.", AutoSize = false, Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleCenter, ForeColor = Theme.Muted, BackColor = Theme.Card
+            };
+            lblSummary = new Label { Text = "" };
+            card.Controls.Add(lblEmpty);
+            card.Controls.Add(gridResults);
+            card.Controls.Add(Separator());
+            card.Controls.Add(CardHeader("Hasil", lblSummary));
+            lblEmpty.BringToFront();
+            return card;
+        }
+
+        Control BuildLogCard()
+        {
+            var card = new CardPanel { Dock = DockStyle.Fill, Margin = new Padding(5, 0, 0, 0) };
+            log = new RichTextBox
+            {
+                Dock = DockStyle.Fill, ReadOnly = true, BorderStyle = BorderStyle.None, BackColor = ColorTranslator.FromHtml("#FAFBFD"),
+                Font = new Font("Consolas", 8.5F), ForeColor = Theme.Ink, DetectUrls = false, WordWrap = true
+            };
+            card.Controls.Add(log);
+            card.Controls.Add(Separator());
+            card.Controls.Add(CardHeader("Log proses", new Label { Text = "Detail verifikasi tiap file" }));
+            return card;
+        }
+
+        Control BuildFooter()
+        {
+            var footer = new Panel { Dock = DockStyle.Bottom, Height = 40, BackColor = Theme.Bg, Padding = new Padding(16, 6, 16, 8) };
+            var right = new FlowLayoutPanel { Dock = DockStyle.Right, AutoSize = true, WrapContents = false, BackColor = Theme.Bg };
+            lblBanks = new Label { AutoSize = true, ForeColor = Theme.Muted, Margin = new Padding(0, 6, 4, 0) };
+            btnBanks = new FlatButton("Perbarui daftar bank", "quiet");
+            btnBanks.Click += async (s, e) => await RefreshBanksAsync(true);
+            var contact = new FlatButton("Kontak Developer", "quiet") { Margin = new Padding(6, 0, 0, 0) };
+            contact.Click += (s, e) => ShowContact();
+            busyButtons.Add(btnBanks);
+            right.Controls.Add(lblBanks);
+            right.Controls.Add(btnBanks);
+            right.Controls.Add(contact);
+            footer.Controls.Add(new Label
+            {
+                Dock = DockStyle.Fill, ForeColor = Theme.Muted, TextAlign = ContentAlignment.MiddleLeft,
+                Text = "File diproses di komputer ini. Hasil sementara dihapus saat aplikasi ditutup - unduh hasil yang diperlukan."
+            });
+            footer.Controls.Add(right);
+            return footer;
+        }
+
+        static DataGridView NewGrid()
         {
             var g = new DataGridView
             {
-                Dock = DockStyle.Fill, ReadOnly = readOnly, AllowUserToAddRows = false, AllowUserToDeleteRows = !readOnly,
-                RowHeadersVisible = false, SelectionMode = DataGridViewSelectionMode.FullRowSelect,
-                BackgroundColor = Color.White, BorderStyle = BorderStyle.None, EnableHeadersVisualStyles = false
+                Dock = DockStyle.Fill, AllowUserToAddRows = false, AllowUserToDeleteRows = false, AllowUserToResizeRows = false,
+                RowHeadersVisible = false, SelectionMode = DataGridViewSelectionMode.FullRowSelect, BackgroundColor = Theme.Card,
+                BorderStyle = BorderStyle.None, EnableHeadersVisualStyles = false, GridColor = ColorTranslator.FromHtml("#E6ECF3"),
+                CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal, ColumnHeadersHeight = 26,
+                ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing
             };
-            g.ColumnHeadersDefaultCellStyle.BackColor = Blue;
-            g.ColumnHeadersDefaultCellStyle.ForeColor = Color.White;
-            g.ColumnHeadersDefaultCellStyle.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
-            g.ColumnHeadersHeight = 28;
-            g.ShowCellToolTips = false;
+            g.ColumnHeadersDefaultCellStyle.BackColor = ColorTranslator.FromHtml("#F1F5FB");
+            g.ColumnHeadersDefaultCellStyle.ForeColor = Theme.Navy;
+            g.ColumnHeadersDefaultCellStyle.Font = new Font(Theme.Font, 9F, FontStyle.Bold);
+            g.ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.None;
+            g.DefaultCellStyle.SelectionBackColor = Theme.Tint;
+            g.DefaultCellStyle.SelectionForeColor = Theme.Ink;
+            g.DefaultCellStyle.ForeColor = Theme.Ink;
+            g.RowTemplate.Height = 26;
             return g;
         }
 
-        static DataGridViewTextBoxColumn TextCol(string header, int width, bool readOnly)
+        static DataGridViewTextBoxColumn Col(string header, int width, bool readOnly)
         {
-            return new DataGridViewTextBoxColumn { HeaderText = header, Width = width, ReadOnly = readOnly };
+            return new DataGridViewTextBoxColumn { HeaderText = header, Width = width, ReadOnly = readOnly, SortMode = DataGridViewColumnSortMode.NotSortable };
         }
 
         // ------------------------------------------------------------ settings
@@ -452,124 +678,137 @@ namespace BSP
         {
             var s = Settings.Load();
             Func<string, string, string> get = (k, d) => { string v; return s.TryGetValue(k, out v) && v != "" ? v : d; };
-            txtR.Text = get("r_folder", "");
-            if (Engine.RscriptIn(txtR.Text) == "") txtR.Text = Engine.FindRFolder();
-            txtEngine.Text = get("engine_folder", "");
-            if (!File.Exists(Path.Combine(txtEngine.Text, Engine.Entry))) txtEngine.Text = Engine.FindEngineFolder();
-            txtOut.Text = get("output_folder", "");
-            Select(cboLoc, get("location", LocChosen));
-            Select(cboMode, get("mode", ModePerFile));
-            Select(cboExist, get("on_exists", ExistSuffix));
-            Select(cboName, get("name_style", NameOriginal));
+            cboMode.SelectedItem = get("mode", ModePerFile) == ModeCons ? ModeCons : ModePerFile;
             decimal tol;
             if (decimal.TryParse(get("tolerance", "0.01"), NumberStyles.Any, CultureInfo.InvariantCulture, out tol)) numTol.Value = tol;
-            chkOpen.Checked = get("open_folder", "1") == "1";
-            chkRecap.Checked = get("recap", "0") == "1";
+            chkRecap.Checked = get("recap_v2", "1") == "1";
             lastInputFolder = get("last_input_folder", "");
+            lastDownloadFolder = get("last_download_folder", "");
         }
 
         void SaveSettings()
         {
             if (Silent) return;
-            var s = new Dictionary<string, string>();
-            s["r_folder"] = txtR.Text; s["engine_folder"] = txtEngine.Text; s["output_folder"] = txtOut.Text;
-            s["location"] = (string)cboLoc.SelectedItem; s["mode"] = (string)cboMode.SelectedItem;
-            s["on_exists"] = (string)cboExist.SelectedItem; s["name_style"] = (string)cboName.SelectedItem;
+            var s = Settings.Load();
+            s["mode"] = (string)cboMode.SelectedItem;
             s["tolerance"] = numTol.Value.ToString(CultureInfo.InvariantCulture);
-            s["open_folder"] = chkOpen.Checked ? "1" : "0"; s["recap"] = chkRecap.Checked ? "1" : "0";
+            s["recap_v2"] = chkRecap.Checked ? "1" : "0";
             s["last_input_folder"] = lastInputFolder;
+            s["last_download_folder"] = lastDownloadFolder;
             Settings.Save(s);
         }
 
-        static void Select(ComboBox c, string value)
-        {
-            int i = c.Items.IndexOf(value);
-            c.SelectedIndex = i >= 0 ? i : 0;
-        }
+        // R and engine are found automatically (bsp_config.txt from Install_BSP.bat, else standard places)
+        string Rscript { get { return Engine.RscriptIn(Engine.FindRFolder()); } }
+        string EngineDir { get { return Engine.FindEngineFolder(); } }
 
-        // ------------------------------------------------------------ messages / busy state
+        // ------------------------------------------------------------ messages / state
         void Msg(string text, MessageBoxIcon icon)
         {
             LastMessage += text + "\n";
-            if (!Silent) MessageBox.Show(this, text, "BSP", MessageBoxButtons.OK, icon);
+            if (!Silent) MessageBox.Show(this, text, "Bank Statement Parser", MessageBoxButtons.OK, icon);
         }
 
-        bool Ask(string text)
-        {
-            if (Silent) return true;
-            return MessageBox.Show(this, text, "BSP", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
-        }
+        void Status(string text) { lblStatus.Text = text; }
 
         void SetBusy(bool busy, string text)
         {
-            foreach (var b in actionButtons) b.Enabled = !busy;
-            progress.Visible = busy;
-            statusText.Text = text;
+            foreach (var b in busyButtons) b.Enabled = !busy;
+            drop.Busy = busy; drop.Invalidate();
+            progress.Style = busy ? ProgressBarStyle.Marquee : ProgressBarStyle.Continuous;
+            if (!busy) progress.Value = 0;
+            gridFiles.ReadOnly = busy;
             Cursor = busy ? Cursors.WaitCursor : Cursors.Default;
+            Status(text);
+            if (!busy) UpdateButtons();
+        }
+
+        void UpdateButtons()
+        {
+            bool hasFiles = gridFiles.Rows.Count > 0;
+            btnDetect.Enabled = hasFiles; btnProcess.Enabled = hasFiles; btnClear.Enabled = hasFiles;
+            btnRemove.Enabled = gridFiles.SelectedRows.Count > 0;
+            btnDownload.Enabled = gridResults.Rows.Cast<DataGridViewRow>().Any(r => !string.IsNullOrEmpty(r.Tag as string));
+            lblFileCount.Text = gridFiles.Rows.Count + " file";
+            lblEmpty.Visible = gridResults.Rows.Count == 0;
+        }
+
+        void Log(string text, Color color)
+        {
+            log.SelectionStart = log.TextLength;
+            log.SelectionLength = 0;
+            log.SelectionColor = color;
+            log.AppendText(text + "\n");
+            log.SelectionColor = log.ForeColor;
+            log.ScrollToCaret();
         }
 
         // ------------------------------------------------------------ file list
         void SelectFiles()
         {
-            using (var d = new OpenFileDialog { Filter = "PDF rekening koran (*.pdf)|*.pdf", Multiselect = true, Title = "Pilih satu atau lebih file rekening koran" })
+            using (var d = new OpenFileDialog { Filter = "PDF rekening koran (*.pdf)|*.pdf", Multiselect = true, Title = "Pilih file PDF rekening koran" })
             {
                 if (Directory.Exists(lastInputFolder)) d.InitialDirectory = lastInputFolder;
                 if (d.ShowDialog(this) == DialogResult.OK) AddFiles(d.FileNames);
             }
         }
 
-        public void AddFiles(IEnumerable<string> files)
+        public void AddFiles(string[] files)
         {
-            var existing = new HashSet<string>(gridFiles.Rows.Cast<DataGridViewRow>().Select(r => ((string)r.Cells[1].Value ?? "").ToLowerInvariant()));
+            var existing = new HashSet<string>(gridFiles.Rows.Cast<DataGridViewRow>().Select(r => ((string)r.Cells[F_PATH].Value ?? "").ToLowerInvariant()));
+            int added = 0, skipped = 0;
             foreach (string f in files)
             {
-                if (!f.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase) || existing.Contains(f.ToLowerInvariant())) continue;
+                if (!f.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase)) { skipped++; continue; }
+                if (existing.Contains(f.ToLowerInvariant())) continue;
                 int i = gridFiles.Rows.Add();
-                gridFiles.Rows[i].Cells[0].Value = (i + 1).ToString();
-                gridFiles.Rows[i].Cells[1].Value = f;
-                gridFiles.Rows[i].Cells[2].Value = "AUTO";
-                gridFiles.Rows[i].Cells[3].Value = "";
+                var r = gridFiles.Rows[i];
+                r.Cells[F_NO].Value = (i + 1).ToString();
+                r.Cells[F_FILE].Value = Path.GetFileName(f);
+                r.Cells[F_FILE].ToolTipText = f;
+                r.Cells[F_BANK].Value = "AUTO";
+                r.Cells[F_PWD].Value = "";
+                r.Cells[F_STATUS].Value = "Belum diproses";
+                r.Cells[F_STATUS].Style.ForeColor = Theme.Muted;
+                r.Cells[F_PATH].Value = f;
                 existing.Add(f.ToLowerInvariant());
                 lastInputFolder = Path.GetDirectoryName(f);
+                added++;
             }
+            if (skipped > 0) Log(string.Format("[INFO] {0} file dilewati (bukan PDF).", skipped), Theme.Muted);
+            if (added > 0) Status(string.Format("{0} file ditambahkan. Klik 'Deteksi Bank' untuk mengecek, atau langsung 'Proses'.", added));
+            gridFiles.ClearSelection();
+            UpdateButtons();
         }
 
         public void ClearFiles(bool ask)
         {
-            if (ask && gridFiles.Rows.Count > 0 && !Ask("Hapus semua file dari daftar?")) return;
+            if (gridFiles.Rows.Count == 0) return;
+            if (ask && !Silent && MessageBox.Show(this, "Hapus semua file dari daftar?", "Bank Statement Parser",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
             gridFiles.Rows.Clear();
+            Status("Daftar file dikosongkan.");
+            UpdateButtons();
         }
 
         void RemoveSelected()
         {
-            foreach (DataGridViewRow r in gridFiles.SelectedRows) gridFiles.Rows.Remove(r);
-            for (int i = 0; i < gridFiles.Rows.Count; i++) gridFiles.Rows[i].Cells[0].Value = (i + 1).ToString();
+            foreach (DataGridViewRow r in gridFiles.SelectedRows.Cast<DataGridViewRow>().ToList()) gridFiles.Rows.Remove(r);
+            for (int i = 0; i < gridFiles.Rows.Count; i++) gridFiles.Rows[i].Cells[F_NO].Value = (i + 1).ToString();
+            UpdateButtons();
         }
 
-        // ------------------------------------------------------------ job files
-        string Rscript { get { return Engine.RscriptIn(txtR.Text); } }
-        string EngineDir { get { return txtEngine.Text.Trim().TrimEnd('\\'); } }
-
-        bool CheckSettings(bool needOutput)
+        // ------------------------------------------------------------ engine jobs
+        bool CheckReady()
         {
-            if (Rscript == "")
-            {
-                Msg("Folder R belum benar: pilih folder yang berisi Rscript.exe (contoh: C:\\Program Files\\R\\R-4.2.2\\bin).\nJalankan Install_BSP.bat bila R belum terpasang.", MessageBoxIcon.Warning);
-                return false;
-            }
-            if (!File.Exists(Path.Combine(EngineDir, Engine.Entry)))
-            {
-                Msg("Folder engine R belum benar: pilih folder yang berisi " + Engine.Entry + ".", MessageBoxIcon.Warning);
-                return false;
-            }
-            if (needOutput && (string)cboLoc.SelectedItem != LocPdf && !Directory.Exists(txtOut.Text.Trim()))
-            {
-                Msg("Mohon pilih folder tujuan output.", MessageBoxIcon.Warning);
-                return false;
-            }
             if (gridFiles.Rows.Count == 0)
             {
-                Msg("Belum ada file PDF. Klik 'Pilih File PDF...' atau tarik file ke tabel.", MessageBoxIcon.Warning);
+                Msg("Belum ada file PDF. Seret file ke kotak di atas atau klik untuk memilih.", MessageBoxIcon.Information);
+                return false;
+            }
+            if (Rscript == "" || !File.Exists(Path.Combine(EngineDir, Engine.Entry)))
+            {
+                Msg("R atau engine BSP belum terpasang di komputer ini.\nJalankan Install_BSP.bat di folder program, lalu buka aplikasi lagi.", MessageBoxIcon.Warning);
                 return false;
             }
             return true;
@@ -577,35 +816,16 @@ namespace BSP
 
         void WriteManifest()
         {
+            gridFiles.EndEdit();
             var sb = new StringBuilder("file_path,bank_id,variant,password,output_dir\n");
-            bool pdfFolder = (string)cboLoc.SelectedItem == LocPdf;
             foreach (DataGridViewRow r in gridFiles.Rows)
             {
-                string f = (string)r.Cells[1].Value ?? "";
-                string bank = (string)r.Cells[2].Value ?? "";
-                if (bank == "") bank = "AUTO";
-                sb.Append(Engine.CsvField(f)).Append(',').Append(Engine.CsvField(bank)).Append(',')
-                  .Append(Engine.CsvField((string)r.Cells[3].Value ?? "")).Append(',')
-                  .Append(Engine.CsvField((string)r.Cells[4].Value ?? "")).Append(',')
-                  .Append(Engine.CsvField(pdfFolder ? Path.GetDirectoryName(f) : "")).Append('\n');
+                string bank = (string)r.Cells[F_BANK].Value ?? "";
+                sb.Append(Engine.CsvField((string)r.Cells[F_PATH].Value)).Append(',')
+                  .Append(Engine.CsvField(bank == "" ? "AUTO" : bank)).Append(",\"\",")
+                  .Append(Engine.CsvField((string)r.Cells[F_PWD].Value ?? "")).Append(",\"\"\n");
             }
             Engine.WriteText(Path.Combine(Engine.WorkDir, "job_manifest.csv"), sb.ToString());
-        }
-
-        void WriteOptions(bool verifyOnly)
-        {
-            bool cons = (string)cboMode.SelectedItem == ModeCons;
-            string outDir = txtOut.Text.Trim().TrimEnd('\\');
-            if (outDir == "") outDir = Engine.WorkDir;
-            var sb = new StringBuilder("key,value\n");
-            sb.Append("output_dir,").Append(Engine.CsvField(outDir)).Append('\n');
-            sb.Append("output_mode,").Append(cons ? "consolidated" : "per_file").Append('\n');
-            sb.Append("on_exists,").Append((string)cboExist.SelectedItem == ExistOverwrite ? "overwrite" : "suffix").Append('\n');
-            sb.Append("tolerance,").Append(numTol.Value.ToString(CultureInfo.InvariantCulture)).Append('\n');
-            sb.Append("verify_only,").Append(verifyOnly ? "1" : "0").Append('\n');
-            sb.Append("name_style,").Append(cons || (string)cboName.SelectedItem == NameStandard ? "standard" : "original").Append('\n');
-            sb.Append("recap,").Append(chkRecap.Checked ? "1" : "0").Append('\n');
-            Engine.WriteText(Path.Combine(Engine.WorkDir, "job_options.csv"), sb.ToString());
         }
 
         Task<string> RunEngineAsync(string mode)
@@ -614,214 +834,267 @@ namespace BSP
             return Task.Run(() => { string err; return Engine.Run(rs, eng, mode, out err) ? "" : err; });
         }
 
+        DataGridViewRow FileRow(string path)
+        {
+            string p = (path ?? "").ToLowerInvariant();
+            return gridFiles.Rows.Cast<DataGridViewRow>().FirstOrDefault(r => ((string)r.Cells[F_PATH].Value ?? "").ToLowerInvariant() == p);
+        }
+
+        static void SetStatus(DataGridViewCell c, string text, Color color)
+        {
+            c.Value = text;
+            c.Style.ForeColor = color;
+            c.Style.SelectionForeColor = color;
+            c.Style.Font = new Font(Theme.Font, 9F, FontStyle.Bold);
+        }
+
         // ------------------------------------------------------------ actions
         public async Task RefreshBanksAsync(bool report)
         {
             if (Rscript == "" || !File.Exists(Path.Combine(EngineDir, Engine.Entry)))
             {
-                if (report) Msg("Mohon pilih folder R dan folder engine terlebih dahulu.", MessageBoxIcon.Warning);
+                if (report) Msg("R atau engine BSP belum terpasang. Jalankan Install_BSP.bat terlebih dahulu.", MessageBoxIcon.Warning);
                 return;
             }
             SetBusy(true, "Membaca daftar bank dari engine...");
             string err = await RunEngineAsync("list_banks");
-            SetBusy(false, err == "" ? "Siap" : "Gagal membaca daftar bank");
+            SetBusy(false, err == "" ? "Daftar bank diperbarui." : "Gagal membaca daftar bank.");
             if (err != "") { Msg(err, MessageBoxIcon.Error); return; }
-            LoadBankRegistry();
-            if (report) Msg("Daftar bank diperbarui: " + (colBank.Items.Count - 1) + " bank tersedia.", MessageBoxIcon.Information);
-        }
-
-        void LoadBankRegistry()
-        {
             var rows = Engine.ReadCsv(Path.Combine(Engine.WorkDir, "bank_registry.csv"));
-            if (rows.Count == 0) return;
             colBank.Items.Clear(); colBank.Items.Add("AUTO");
-            colFormat.Items.Clear(); colFormat.Items.Add("");
             foreach (string id in rows.Select(r => Engine.Get(r, "bank_id")).Distinct()) colBank.Items.Add(id);
-            foreach (string v in rows.Select(r => Engine.Get(r, "variant")).Distinct()) colFormat.Items.Add(v);
-            FillGrid(gridBanks, rows, new[] { "bank_id", "bank_name", "variant", "description" },
-                     new[] { "Kode Bank", "Nama Bank", "Format", "Keterangan" }, null);
-            lblInfo.Text = string.Format("Engine: {0} bank, {1} format", colBank.Items.Count - 1, rows.Count);
+            lblBanks.Text = (colBank.Items.Count - 1) + " bank didukung";
+            if (report)
+            {
+                var list = string.Join("\n", rows.Select(r => "- " + Engine.Get(r, "bank_name") + "  (" + Engine.Get(r, "variant") + ")"));
+                Msg("Daftar bank diperbarui. Format yang didukung:\n\n" + list, MessageBoxIcon.Information);
+            }
         }
 
         public async Task DetectAsync()
         {
-            if (!CheckSettings(false)) return;
+            if (!CheckReady()) return;
             if (colBank.Items.Count <= 1) await RefreshBanksAsync(false);
             WriteManifest();
-            SetBusy(true, "Mendeteksi bank...");
+            SetBusy(true, "Mendeteksi bank dari " + gridFiles.Rows.Count + " file...");
             string err = await RunEngineAsync("detect");
-            SetBusy(false, err == "" ? "Deteksi selesai" : "Deteksi gagal");
-            if (err != "") { Msg(err, MessageBoxIcon.Error); return; }
-            ApplyDetectResult();
-        }
-
-        void ApplyDetectResult()
-        {
-            var rows = Engine.ReadCsv(Path.Combine(Engine.WorkDir, "detect_result.csv"));
-            foreach (DataGridViewRow g in gridFiles.Rows)
+            if (err != "") { SetBusy(false, "Deteksi gagal."); Msg(err, MessageBoxIcon.Error); return; }
+            int unknown = 0;
+            foreach (var d in Engine.ReadCsv(Path.Combine(Engine.WorkDir, "detect_result.csv")))
             {
-                string f = ((string)g.Cells[1].Value ?? "").ToLowerInvariant();
-                var d = rows.FirstOrDefault(r => Engine.Get(r, "file_path").ToLowerInvariant() == f);
-                if (d == null) continue;
+                var r = FileRow(Engine.Get(d, "file_path"));
+                if (r == null) continue;
                 string variant = Engine.Get(d, "variant");
-                g.Cells[5].Value = Engine.Get(d, "bank_id") + (variant != "" ? " - " + variant : "");
-                g.Cells[6].Value = Engine.Get(d, "score");
-                g.Cells[7].Value = Engine.Get(d, "account_no");
-                g.Cells[8].Value = Engine.Get(d, "account_name");
-                string ps = Engine.Get(d, "period_start");
-                g.Cells[9].Value = ps != "" ? ps + " - " + Engine.Get(d, "period_end") : "";
+                r.Cells[F_DET].Value = Engine.Get(d, "bank_id") + (variant != "" ? " - " + variant : "");
+                r.Cells[F_SCORE].Value = Engine.Get(d, "score");
+                FillMeta(r, d);
                 string st = Engine.Get(d, "status");
-                g.Cells[10].Value = StatusLabel(st);
-                g.Cells[10].Style.BackColor = StatusColor(st);
-                g.Cells[11].Value = Engine.Get(d, "message");
+                if (st == "AUTO" || st == "MANUAL") SetStatus(r.Cells[F_STATUS], st == "AUTO" ? "Terdeteksi" : "Dipilih manual", Theme.Ok);
+                else if (st == "AMBIGUOUS") { SetStatus(r.Cells[F_STATUS], "Ragu - pilih bank", Theme.Warn); unknown++; }
+                else if (st == "PASSWORD") { SetStatus(r.Cells[F_STATUS], "Perlu password", Theme.Err); unknown++; }
+                else { SetStatus(r.Cells[F_STATUS], st == "UNKNOWN" ? "Tidak dikenali - pilih bank" : "Gagal dibaca", Theme.Err); unknown++; }
+                r.Cells[F_STATUS].ToolTipText = Engine.Get(d, "message");
             }
+            SetBusy(false, unknown == 0 ? "Semua bank terdeteksi. Klik 'Proses'."
+                                        : unknown + " file perlu dicek: pilih bank / isi password di daftar file, lalu klik 'Proses'.");
         }
 
-        static string StatusLabel(string s)
+        static void FillMeta(DataGridViewRow r, Dictionary<string, string> d)
         {
-            switch (s)
-            {
-                case "AUTO": return "Terdeteksi otomatis";
-                case "MANUAL": return "Dipilih manual";
-                case "AMBIGUOUS": return "Ragu - mohon cek";
-                case "UNKNOWN": return "Tidak dikenali";
-                case "PASSWORD": return "Perlu password";
-                default: return s;
-            }
+            r.Cells[F_ACC].Value = Engine.Get(d, "account_no");
+            r.Cells[F_NAME].Value = Engine.Get(d, "account_name");
+            string ps = Engine.Get(d, "period_start");
+            r.Cells[F_PERIOD].Value = ps != "" ? ps + " - " + Engine.Get(d, "period_end") : "";
         }
 
-        static Color StatusColor(string s)
+        public async Task ProcessAsync()
         {
-            switch (s)
-            {
-                case "OK": case "AUTO": case "MANUAL": case "INFO": return Green;
-                case "WARN": case "AMBIGUOUS": return Yellow;
-                default: return Red;
-            }
-        }
-
-        public async Task ProcessAsync(bool verifyOnly)
-        {
-            if (!CheckSettings(!verifyOnly)) return;
-            if (!Ask((verifyOnly ? "Verifikasi " : "Proses ") + gridFiles.Rows.Count + " file PDF sekarang?")) return;
+            if (!CheckReady()) return;
+            if (colBank.Items.Count <= 1) await RefreshBanksAsync(false);
+            bool cons = (string)cboMode.SelectedItem == ModeCons;
+            string outDir = Path.Combine(sessionDir, "run" + (++runNo));
+            Directory.CreateDirectory(outDir);
             WriteManifest();
-            WriteOptions(verifyOnly);
+            var opt = new StringBuilder("key,value\n");
+            opt.Append("output_dir,").Append(Engine.CsvField(outDir)).Append('\n');
+            opt.Append("output_mode,").Append(cons ? "consolidated" : "per_file").Append('\n');
+            opt.Append("on_exists,suffix\n");
+            opt.Append("tolerance,").Append(numTol.Value.ToString(CultureInfo.InvariantCulture)).Append('\n');
+            opt.Append("verify_only,0\n");
+            opt.Append("name_style,").Append(cons ? "standard" : "original").Append('\n');
+            opt.Append("recap,").Append(chkRecap.Checked ? "1" : "0").Append('\n');
+            Engine.WriteText(Path.Combine(Engine.WorkDir, "job_options.csv"), opt.ToString());
             SaveSettings();
-            SetBusy(true, "Memproses " + gridFiles.Rows.Count + " file... (file banyak bisa memakan beberapa menit)");
+
+            int n = gridFiles.Rows.Count;
+            SetBusy(true, "Memproses " + n + " file... (banyak file bisa memakan beberapa menit)");
+            Log(string.Format("=== {0}  Proses {1} file  |  {2}{3}", DateTime.Now.ToString("HH:mm:ss"), n,
+                              cons ? "gabung per rekening" : "per file", chkRecap.Checked ? " + rekap mutasi" : ""), Theme.Navy);
             string err = await RunEngineAsync("parse");
-            SetBusy(false, err == "" ? "Selesai" : "Proses gagal");
-            if (err != "") { Msg(err, MessageBoxIcon.Error); return; }
+            if (err != "") { SetBusy(false, "Proses gagal."); Log("[GAGAL] " + err, Theme.Err); Msg(err, MessageBoxIcon.Error); return; }
 
-            var res = LoadResults();
-            LoadVerification();
-            int ok = res.Count(r => Engine.Get(r, "status") == "OK");
-            int warn = res.Count(r => Engine.Get(r, "status") == "WARN");
-            int bad = res.Count - ok - warn;
-            tabs.SelectedTab = tabResult;
-            Msg(string.Format("Selesai!\n\nOK      : {0}\nWARN    : {1} (periksa tab Verifikasi)\nERROR   : {2}{3}",
-                              ok, warn, bad, bad > 0 ? " (periksa tab Hasil & Verifikasi)" : ""),
-                bad > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
-            if (!verifyOnly && chkOpen.Checked && !Silent) OpenOutputFolder();
-        }
-
-        List<Dictionary<string, string>> LoadResults()
-        {
-            var rows = Engine.ReadCsv(Path.Combine(Engine.WorkDir, "run_result.csv"));
-            foreach (var r in rows)
+            var res = Engine.ReadCsv(Path.Combine(Engine.WorkDir, "run_result.csv"));
+            var details = Engine.ReadCsv(Path.Combine(Engine.WorkDir, "verification_detail.csv"));
+            var cross = Engine.ReadCsv(Path.Combine(Engine.WorkDir, "consolidation_detail.csv"));
+            int ok = 0, warn = 0, bad = 0;
+            foreach (var r in res)
             {
-                string src = Engine.Get(r, "opening_source");
-                r["opening_source"] = src == "stated" ? "Dari PDF" : (src == "derived" ? "Dihitung" : src);
-                r["output_name"] = Path.GetFileName(Engine.Get(r, "output_file"));
-            }
-            FillGrid(gridResult, rows,
-                new[] { "file_name", "bank_id", "variant", "account_no", "account_name", "currency", "period_start", "period_end",
-                        "rows", "opening", "opening_source", "total_debit", "total_credit", "closing", "n_error", "n_warn",
-                        "status", "output_name", "message", "source_files" },
-                new[] { "File PDF", "Bank", "Format", "No. Rekening", "Nama Rekening", "Mata Uang", "Periode Awal", "Periode Akhir",
-                        "Jumlah Transaksi", "Saldo Awal", "Sumber Saldo Awal", "Total Debit", "Total Kredit", "Saldo Akhir", "Error",
-                        "Warning", "Status", "File Output", "Pesan", "File Sumber (gabungan)" },
-                "status");
-            for (int i = 0; i < rows.Count; i++) gridResult.Rows[i].Tag = Engine.Get(rows[i], "output_file");
-            foreach (string c in new[] { "Saldo Awal", "Total Debit", "Total Kredit", "Saldo Akhir" }) FormatNumber(gridResult, c);
-            FitColumns(gridResult);
-            return rows;
-        }
-
-        void LoadVerification()
-        {
-            var rows = Engine.ReadCsv(Path.Combine(Engine.WorkDir, "verification_detail.csv"));
-            foreach (var c in Engine.ReadCsv(Path.Combine(Engine.WorkDir, "consolidation_detail.csv")))
-            {
-                c["check"] = "antar-file: " + Engine.Get(c, "check");
-                rows.Add(c);
-            }
-            FillGrid(gridVerify, rows,
-                new[] { "file_name", "output_file", "excel_row", "date", "description", "debit", "credit", "balance", "check", "severity", "message" },
-                new[] { "File PDF", "File Output", "Baris Excel", "Tanggal", "Deskripsi", "Debit", "Kredit", "Saldo", "Pemeriksaan", "Tingkat", "Keterangan" },
-                "severity");
-            foreach (string c in new[] { "Debit", "Kredit", "Saldo" }) FormatNumber(gridVerify, c);
-            FitColumns(gridVerify);
-            tabVerify.Text = rows.Count == 0 ? "Verifikasi" : "Verifikasi (" + rows.Count + ")";
-        }
-
-        static void FillGrid(DataGridView g, List<Dictionary<string, string>> rows, string[] keys, string[] heads, string statusKey)
-        {
-            g.Rows.Clear(); g.Columns.Clear();
-            for (int k = 0; k < keys.Length; k++) g.Columns.Add("c" + k, heads[k]);
-            foreach (var r in rows)
-            {
-                int i = g.Rows.Add(keys.Select(k => (object)Engine.Get(r, k)).ToArray());
-                if (statusKey != null)
+                string status = Engine.Get(r, "status"), name = Engine.Get(r, "file_name"), output = Engine.Get(r, "output_file");
+                string group = Engine.Get(r, "group_id");
+                bool isRecap = group == "REKAP", isCons = name.StartsWith("[GABUNGAN");
+                // the file list shows the outcome per PDF
+                var fr = FileRow(Engine.Get(r, "file_path"));
+                if (fr != null)
                 {
-                    int col = Array.IndexOf(keys, statusKey);
-                    g.Rows[i].Cells[col].Style.BackColor = StatusColor(Engine.Get(r, statusKey));
+                    FillMeta(fr, r);
+                    if (fr.Cells[F_DET].Value == null || (string)fr.Cells[F_DET].Value == "")
+                        fr.Cells[F_DET].Value = Engine.Get(r, "bank_id") + (Engine.Get(r, "variant") != "" ? " - " + Engine.Get(r, "variant") : "");
+                    SetStatus(fr.Cells[F_STATUS], status == "OK" ? "Selesai - OK" : status == "WARN" ? "Selesai - perlu dicek" : "Gagal",
+                              status == "OK" ? Theme.Ok : status == "WARN" ? Theme.Warn : Theme.Err);
+                    fr.Cells[F_STATUS].ToolTipText = Engine.Get(r, "message");
+                }
+                // results: everything that produced a file, plus PDFs that failed
+                // per-file verification rows of a consolidated run have no file of their own: log only
+                if (output == "" && status != "ERROR") { LogResult(r, details, cross, false, false); continue; }
+                if (status == "OK") ok++; else if (status == "WARN") warn++; else bad++;
+                AddResultRow(r, output, isRecap ? "Rekap mutasi" : isCons ? "Gabungan" : "Per file", status);
+                LogResult(r, details, cross, isCons || isRecap, true);
+            }
+            countOk += ok; countWarn += warn; countErr += bad;
+            lblSummary.Text = string.Format("{0} OK  ·  {1} perlu dicek  ·  {2} gagal", countOk, countWarn, countErr);
+            SetBusy(false, string.Format("Selesai: {0} OK, {1} perlu dicek, {2} gagal. Centang hasil lalu klik 'Unduh yang Dicentang...'.", ok, warn, bad));
+            LastMessage += lblStatus.Text + "\n";
+        }
+
+        void AddResultRow(Dictionary<string, string> r, string output, string kind, string status)
+        {
+            string name = Engine.Get(r, "file_name");
+            int i = gridResults.Rows.Add();
+            var row = gridResults.Rows[i];
+            bool hasFile = output != "" && File.Exists(output);
+            row.Tag = hasFile ? output : null;
+            row.Cells[R_CHECK].Value = hasFile;
+            row.Cells[R_CHECK].ReadOnly = !hasFile;
+            row.Cells[R_FILE].Value = hasFile ? Path.GetFileName(output) : "(tidak ada file)";
+            string from = name;
+            if (kind == "Gabungan" || kind == "Rekap mutasi")
+            {
+                var src = Engine.Get(r, "source_files").Split(new[] { " | " }, StringSplitOptions.RemoveEmptyEntries);
+                from = kind == "Rekap mutasi" ? name.Replace("[REKAP] ", "") : src.Length + " file: " + string.Join(", ", src);
+                row.Cells[R_FROM].ToolTipText = string.Join("\n", src);
+            }
+            row.Cells[R_FROM].Value = from;
+            row.Cells[R_FROM].Style.ForeColor = Theme.Muted;
+            row.Cells[R_KIND].Value = kind;
+            SetStatus(row.Cells[R_STATUS], status == "OK" ? "✓ OK" : status == "WARN" ? "! Perlu dicek" : "✕ Gagal",
+                      status == "OK" ? Theme.Ok : status == "WARN" ? Theme.Warn : Theme.Err);
+            row.Cells[R_STATUS].ToolTipText = Engine.Get(r, "message");
+            row.Cells[R_DOWNLOAD].Value = hasFile ? "Unduh" : "";
+            UpdateButtons();
+        }
+
+        void LogResult(Dictionary<string, string> r, List<Dictionary<string, string>> details, List<Dictionary<string, string>> cross, bool withCrossFile, bool withDetails)
+        {
+            string status = Engine.Get(r, "status"), name = Engine.Get(r, "file_name");
+            string tag = status == "OK" ? "[OK]" : status == "WARN" ? "[WARNING]" : "[GAGAL]";
+            Color c = status == "OK" ? Theme.Ok : status == "WARN" ? Theme.Warn : Theme.Err;
+            string info = Engine.Get(r, "message");
+            if (Engine.Get(r, "rows") != "")
+                info = string.Format("{0} transaksi, saldo awal {1} ({2}) -> akhir {3}{4}", Engine.Get(r, "rows"), Money(Engine.Get(r, "opening")),
+                    Engine.Get(r, "opening_source") == "stated" ? "dari PDF" : "dihitung", Money(Engine.Get(r, "closing")),
+                    info != "" ? " | " + info : "");
+            Log(string.Format("{0} {1}  {2}", tag, name, info), c);
+            foreach (var d in details.Where(d => withDetails && Engine.Get(d, "file_name") == name))
+            {
+                string sev = Engine.Get(d, "severity");
+                string where = Engine.Get(d, "excel_row") != "" ? "baris " + Engine.Get(d, "excel_row") + " (" + Engine.Get(d, "date") + "): " : "";
+                Log("      " + (sev == "ERROR" ? "ERROR " : sev == "WARN" ? "WARN  " : "INFO  ") + where + Engine.Get(d, "message"),
+                    sev == "ERROR" ? Theme.Err : sev == "WARN" ? Theme.Warn : Theme.Muted);
+            }
+            string gid = Engine.Get(r, "group_id");
+            foreach (var x in cross.Where(x => withCrossFile && Engine.Get(x, "group_id") == gid && gid != ""))
+            {
+                string sev = Engine.Get(x, "severity");
+                Log("      " + (sev == "ERROR" ? "ERROR " : "WARN  ") + Engine.Get(x, "file_name") + ": " + Engine.Get(x, "message"),
+                    sev == "ERROR" ? Theme.Err : Theme.Warn);
+            }
+        }
+
+        static string Money(string v)
+        {
+            double d;
+            return double.TryParse(v, NumberStyles.Any, CultureInfo.InvariantCulture, out d) ? d.ToString("#,##0.00", CultureInfo.InvariantCulture) : v;
+        }
+
+        // ------------------------------------------------------------ downloads
+        void DownloadSingle(int row)
+        {
+            if (row < 0 || row >= gridResults.Rows.Count) return;
+            string src = gridResults.Rows[row].Tag as string;
+            if (string.IsNullOrEmpty(src) || !File.Exists(src)) return;
+            using (var d = new SaveFileDialog { Title = "Simpan sebagai", FileName = Path.GetFileName(src), DefaultExt = "xlsx", Filter = "Excel (*.xlsx)|*.xlsx" })
+            {
+                if (Directory.Exists(lastDownloadFolder)) d.InitialDirectory = lastDownloadFolder;
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+                File.Copy(src, d.FileName, true);
+                lastDownloadFolder = Path.GetDirectoryName(d.FileName);
+                Log("[INFO] Disimpan ke: " + d.FileName, Theme.Muted);
+                Status("Tersimpan: " + d.FileName);
+            }
+        }
+
+        public void DownloadChecked(string folder)
+        {
+            gridResults.EndEdit();
+            var rows = gridResults.Rows.Cast<DataGridViewRow>()
+                       .Where(r => !string.IsNullOrEmpty(r.Tag as string) && r.Cells[R_CHECK].Value is bool && (bool)r.Cells[R_CHECK].Value).ToList();
+            if (rows.Count == 0) { Status("Belum ada hasil yang dicentang untuk diunduh."); return; }
+            if (folder == null)
+            {
+                using (var d = new FolderBrowserDialog { Description = "Pilih folder tujuan untuk hasil yang dicentang" })
+                {
+                    if (Directory.Exists(lastDownloadFolder)) d.SelectedPath = lastDownloadFolder;
+                    if (d.ShowDialog(this) != DialogResult.OK) return;
+                    folder = d.SelectedPath;
                 }
             }
-            FitColumns(g);
-        }
-
-        static void FitColumns(DataGridView g)
-        {
-            g.AutoResizeColumns(DataGridViewAutoSizeColumnsMode.AllCells);
-            foreach (DataGridViewColumn c in g.Columns) if (c.Width > 420) c.Width = 420;
-        }
-
-        static void FormatNumber(DataGridView g, string header)
-        {
-            foreach (DataGridViewColumn c in g.Columns)
+            foreach (var r in rows)
             {
-                if (c.HeaderText != header) continue;
-                c.DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleRight;
-                foreach (DataGridViewRow r in g.Rows)
-                {
-                    double v;
-                    if (double.TryParse((string)r.Cells[c.Index].Value, NumberStyles.Any, CultureInfo.InvariantCulture, out v))
-                        r.Cells[c.Index].Value = v.ToString("#,##0.00", CultureInfo.InvariantCulture);
-                }
+                string src = (string)r.Tag;
+                string target = Path.Combine(folder, Path.GetFileName(src));
+                string b = Path.Combine(folder, Path.GetFileNameWithoutExtension(src)), ext = Path.GetExtension(src);
+                for (int k = 1; File.Exists(target); k++) target = b + "(" + k + ")" + ext;
+                File.Copy(src, target);
             }
+            lastDownloadFolder = folder;
+            Log(string.Format("[INFO] {0} file (dicentang) disimpan ke: {1}", rows.Count, folder), Theme.Muted);
+            Status(string.Format("{0} file disimpan ke: {1}", rows.Count, folder));
+            LastMessage += lblStatus.Text + "\n";
+            if (!Silent) Process.Start("explorer.exe", "\"" + folder + "\"");
         }
 
-        void OpenResultFile(int row)
+        // ------------------------------------------------------------ contact popup (bottom-right, like SLIK Parser)
+        void ShowContact()
         {
-            if (row < 0 || row >= gridResult.Rows.Count) return;
-            string f = gridResult.Rows[row].Tag as string;
-            if (!string.IsNullOrEmpty(f) && File.Exists(f)) OpenPath(f);
+            var p = new Form
+            {
+                Text = "Kontak Developer", FormBorderStyle = FormBorderStyle.FixedToolWindow, StartPosition = FormStartPosition.Manual,
+                Size = new Size(320, 170), BackColor = Theme.Card, TopMost = true, ShowInTaskbar = false
+            };
+            var wa = Screen.PrimaryScreen.WorkingArea;
+            p.Location = new Point(wa.Right - p.Width - 20, wa.Bottom - p.Height - 20);
+            p.Controls.Add(new Panel { Dock = DockStyle.Top, Height = 4, BackColor = Theme.Blue });
+            var lbl = new Label { Text = "Hubungi developer via email:", AutoSize = false, TextAlign = ContentAlignment.MiddleCenter, Bounds = new Rectangle(0, 18, 304, 22), ForeColor = Theme.Ink };
+            var link = new LinkLabel { Text = DeveloperEmail, AutoSize = false, TextAlign = ContentAlignment.MiddleCenter, Bounds = new Rectangle(0, 42, 304, 22), LinkColor = Theme.Blue };
+            link.LinkClicked += (s, e) => { try { Process.Start("mailto:" + DeveloperEmail); } catch { } };
+            var close = new FlatButton("Tutup", "secondary") { AutoSize = false, Bounds = new Rectangle(112, 78, 80, 30) };
+            close.Click += (s, e) => p.Close();
+            p.Controls.AddRange(new Control[] { lbl, link, close });
+            p.Show(this);
         }
 
-        void OpenOutputFolder()
-        {
-            string dir = (string)cboLoc.SelectedItem == LocPdf ? lastInputFolder : txtOut.Text.Trim();
-            if (Directory.Exists(dir)) Process.Start("explorer.exe", "\"" + dir + "\"");
-        }
-
-        static void OpenPath(string path)
-        {
-            try { Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }); }
-            catch (Exception ex) { MessageBox.Show("Tidak bisa membuka " + path + "\n" + ex.Message, "BSP"); }
-        }
-
-        // ------------------------------------------------------------ automated self-test
-        // BSP.exe --selftest <pdf1|pdf2|...> <output folder> <per_file|consolidated> <recap 0|1> <report file>
+        // ------------------------------------------------------------ automated checks
+        // BSP.exe --selftest <pdf1|pdf2|...> <download folder> <per_file|consolidated> <recap 0|1> <report file>
         public static int SelfTest(string[] a)
         {
             var sb = new StringBuilder();
@@ -829,22 +1102,23 @@ namespace BSP
             {
                 var f = new MainForm { Silent = true };
                 f.CreateControl();
-                f.txtOut.Text = a[2];
-                f.cboLoc.SelectedItem = LocChosen;
                 f.cboMode.SelectedItem = a[3] == "consolidated" ? ModeCons : ModePerFile;
-                f.cboExist.SelectedItem = ExistOverwrite;
                 f.chkRecap.Checked = a[4] == "1";
-                f.chkOpen.Checked = false;
-                sb.AppendLine("R=" + f.txtR.Text + " | engine=" + f.txtEngine.Text);
+                sb.AppendLine("R=" + f.Rscript + " | engine=" + f.EngineDir);
                 f.AddFiles(a[1].Split('|'));
-                RunSync(f.RefreshBanksAsync(true));
+                RunSync(f.RefreshBanksAsync(false));
                 RunSync(f.DetectAsync());
                 foreach (DataGridViewRow r in f.gridFiles.Rows)
-                    sb.AppendLine("DETECT|" + r.Cells[5].Value + "|" + r.Cells[6].Value + "|" + r.Cells[10].Value);
-                RunSync(f.ProcessAsync(false));
-                foreach (DataGridViewRow r in f.gridResult.Rows)
-                    sb.AppendLine("RESULT|" + r.Cells[0].Value + "|" + r.Cells[1].Value + "|" + r.Cells[8].Value + "|" + r.Cells[16].Value + "|" + r.Cells[17].Value);
-                sb.AppendLine("VERIFY rows=" + f.gridVerify.Rows.Count + " | banks=" + f.gridBanks.Rows.Count);
+                    sb.AppendLine("DETECT|" + r.Cells[F_FILE].Value + "|" + r.Cells[F_DET].Value + "|" + r.Cells[F_SCORE].Value + "|" + r.Cells[F_STATUS].Value);
+                RunSync(f.ProcessAsync());
+                foreach (DataGridViewRow r in f.gridResults.Rows)
+                    sb.AppendLine("RESULT|" + r.Cells[R_FILE].Value + "|" + r.Cells[R_KIND].Value + "|" + r.Cells[R_STATUS].Value + "|" + r.Cells[R_CHECK].Value);
+                foreach (DataGridViewRow r in f.gridFiles.Rows)
+                    sb.AppendLine("FILE|" + r.Cells[F_FILE].Value + "|" + r.Cells[F_STATUS].Value);
+                f.DownloadChecked(a[2]);
+                sb.AppendLine("DOWNLOADED|" + string.Join("|", Directory.GetFiles(a[2]).Select(Path.GetFileName)));
+                sb.AppendLine("LOG lines=" + f.log.Lines.Length);
+                sb.Append(f.log.Text);
                 sb.Append(f.LastMessage);
                 File.WriteAllText(a[5], sb.ToString(), Encoding.UTF8);
                 return 0;
@@ -857,31 +1131,27 @@ namespace BSP
             }
         }
 
-        // BSP.exe --screenshot <png prefix> <pdf1|pdf2|...> : renders every tab after detection (layout check)
+        // BSP.exe --screenshot <png prefix> <pdf1|pdf2|...> : renders the window empty, after detection and after processing
         public static int Screenshot(string[] a)
         {
-            var f = new MainForm { Silent = true };
-            f.StartPosition = FormStartPosition.Manual;
-            f.Location = new Point(-3000, -3000);
-            f.ShowInTaskbar = false;
+            var f = new MainForm { Silent = true, StartPosition = FormStartPosition.Manual, Location = new Point(-3000, -3000), ShowInTaskbar = false };
             f.Show();
-            f.AddFiles(a[2].Split('|'));
-            RunSync(f.RefreshBanksAsync(false));
-            RunSync(f.DetectAsync());
-            if (a.Length > 3) { f.txtOut.Text = a[3]; f.chkRecap.Checked = true; f.chkOpen.Checked = false; RunSync(f.ProcessAsync(false)); }
-            // the normal user flow: switch between all tabs after processing, then draw each one
-            for (int pass = 0; pass < 2; pass++)
-                for (int t = 0; t < f.tabs.TabPages.Count; t++) { f.tabs.SelectedIndex = t; Application.DoEvents(); }
-            for (int t = 0; t < f.tabs.TabPages.Count; t++)
+            Action<string> shot = name =>
             {
-                f.tabs.SelectedIndex = t;
                 Application.DoEvents();
                 using (var bmp = new Bitmap(f.Width, f.Height))
                 {
                     f.DrawToBitmap(bmp, new Rectangle(0, 0, f.Width, f.Height));
-                    bmp.Save(a[1] + "_" + t + ".png", System.Drawing.Imaging.ImageFormat.Png);
+                    bmp.Save(a[1] + "_" + name + ".png", System.Drawing.Imaging.ImageFormat.Png);
                 }
-            }
+            };
+            RunSync(f.RefreshBanksAsync(false));
+            shot("1_kosong");
+            f.AddFiles(a[2].Split('|'));
+            RunSync(f.DetectAsync());
+            shot("2_deteksi");
+            RunSync(f.ProcessAsync());
+            shot("3_hasil");
             f.Close();
             return 0;
         }
@@ -905,12 +1175,7 @@ namespace BSP
             if (args.Length >= 3 && args[0] == "--screenshot")
             {
                 try { return MainForm.Screenshot(args); }
-                catch (Exception ex)
-                {
-                    var w = ex as System.ComponentModel.Win32Exception;
-                    File.WriteAllText(args[1] + "_error.txt", (w != null ? "NativeErrorCode=" + w.NativeErrorCode + Environment.NewLine : "") + ex.ToString());
-                    return 1;
-                }
+                catch (Exception ex) { File.WriteAllText(args[1] + "_error.txt", ex.ToString()); return 1; }
             }
             Application.Run(new MainForm());
             return 0;
