@@ -55,6 +55,7 @@ aplikasi ditutup, jadi unduh dulu hasil yang diperlukan.
 | BCA | Bank Central Asia | e-Statement Rekening Giro |
 | BNI | Bank Negara Indonesia | Account Statement |
 | MANDIRI | Bank Mandiri | Account Statement (Kopra) |
+| MANDIRI | Bank Mandiri | e-Statement Tabungan (Livin'), PDF berpassword - isi kolom Password |
 | BSI | Bank Syariah Indonesia | Account Statement |
 | CIMB | CIMB Niaga | BizChannel Account Statement |
 | MAYBANK | Maybank Indonesia | Cash Management Account Report |
