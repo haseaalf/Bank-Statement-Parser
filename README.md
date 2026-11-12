@@ -17,6 +17,7 @@ engine membaca semua script di foldernya, lalu hasilnya dibaca kembali oleh VBA.
 | BRI | Bank Rakyat Indonesia | Laporan Transaksi Finansial (BRISIM) |
 | BCA | Bank Central Asia | e-Statement Rekening Giro |
 | BNI | Bank Negara Indonesia | Account Statement |
+| BNI | Bank Negara Indonesia | Laporan Mutasi Rekening (BNI mobile), PDF berpassword - isi kolom Password |
 | MANDIRI | Bank Mandiri | Account Statement (Kopra) |
 | MANDIRI | Bank Mandiri | e-Statement Tabungan (Livin'), PDF berpassword - isi kolom Password |
 | BSI | Bank Syariah Indonesia | Account Statement |
